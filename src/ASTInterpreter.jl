@@ -94,8 +94,14 @@ function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}())
 end
 enter(f::Function, env) = enter(first(methods(f)), env)
 
-function print_shadowtree(shadowtree, highlight = nothing)
-    AbstractTrees.print_tree(STDOUT, shadowtree, withinds = true) do io, annotatednode, inds
+function print_shadowtree(shadowtree, highlight = nothing, inds = nothing)
+    from = nothing
+    to = nothing
+    if inds !== nothing
+        from = first(inds)
+        to = last(inds)
+    end
+    AbstractTrees.print_tree(STDOUT, shadowtree, withinds = true, from = from, to = to) do io, annotatednode, inds
         node, evaluated = annotatednode.tree.x, annotatednode.shadow.x.val
         str, _ = pretty_repr(node)
         print_with_color((inds == highlight) ? :yellow : (evaluated ? :green : :red), io, str)
@@ -350,7 +356,9 @@ function RunDebugREPL(interp)
                 evaluated!(interp, oldinterp.retval)
             end
         end
-        print_shadowtree(interp.shadowtree, interp.next_expr[1])
+        curind = interp.next_expr[1][1]
+        range = max(1,curind-2):curind+3
+        print_shadowtree(interp.shadowtree, interp.next_expr[1], range)
         println()
         return true
     end
