@@ -51,7 +51,7 @@ Environment(locals,sparams) = Environment(locals,sparams,Dict{Int,Any}())
 type Interpreter
     parent::Nullable{Interpreter}
     env::Environment
-    meth::Method
+    meth::Any
     ast::Any
     it::Any
     cur_state::Any
@@ -77,10 +77,7 @@ function make_shadowtree(tree)
     shadowtree, it   
 end
 
-function enter(meth::Method, env, parent = Nullable{Interpreter}())
-    ast = Base.uncompressed_ast(meth.func.code)
-    tree = ast.args[3]
-
+function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}())
     shadowtree, it = make_shadowtree(tree)
     
     interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it, start(it), nothing, shadowtree, nothing)
@@ -89,6 +86,11 @@ function enter(meth::Method, env, parent = Nullable{Interpreter}())
         ind, node = next_expr!(interp)
     end
     interp
+end
+function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}())
+    ast = Base.uncompressed_ast(meth.func.code)
+    tree = ast.args[3]
+    enter(meth, tree, env, parent)
 end
 enter(f::Function, env) = enter(first(methods(f)), env)
 
@@ -306,6 +308,21 @@ function RunDebugREPL(interp)
             command = panel.hist.history[end]
         else
             command = strip(line)
+        end
+        if startswith(command, "`")
+            body = parse(command[2:end])
+            f = Expr(:->,Expr(:tuple,keys(interp.env.locals)...,keys(interp.env.sparams)...),
+                body)
+            lam = eval(f)
+            einterp = enter(nothing,Base.uncompressed_ast(lam.code).args[3],interp.env,interp)
+            try
+                show(finish!(einterp))
+                println(); println()
+            catch err
+                REPL.display_error(STDERR, err, Base.catch_backtrace())
+                REPL.println(STDERR); REPL.println(STDERR)
+            end
+            return true
         end
         if command == "s"
             expr = interp.next_expr[2]
