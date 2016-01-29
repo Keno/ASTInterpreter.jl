@@ -1,9 +1,13 @@
 module ASTInterpreter
 
-export enter, Environment
+export enter, Environment, @enter
 import Base: LineEdit, REPL
 
 using AbstractTrees
+using JuliaParser
+using JuliaParser.Lexer
+using Base.Meta
+import JuliaParser.Lexer: SourceNode, SourceRange
 
 import AbstractTrees: children, printnode
 
@@ -57,6 +61,8 @@ type Interpreter
     cur_state::Any
     next_expr::Any
     shadowtree::Any
+    code::AbstractString
+    loctree::Any
     retval::Any
 end
 
@@ -66,8 +72,10 @@ function make_shadowtree(tree)
         if parent_ev
             return parent_ev
         end
-        unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) || isa(node,GenSym)
-        if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck)
+        unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) ||
+            isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode)
+        if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
+            node.head == :inbounds)
             unevaluated = false
         end
         !unevaluated
@@ -77,20 +85,21 @@ function make_shadowtree(tree)
     shadowtree, it   
 end
 
-function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}())
+function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
     
-    interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it, start(it), nothing, shadowtree, nothing)
+    interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it,
+        start(it), nothing, shadowtree, code, loctree, nothing)
     ind, node = next_expr!(interp)
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
     end
     interp
 end
-function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}())
+function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
     ast = Base.uncompressed_ast(meth.func.code)
     tree = ast.args[3]
-    enter(meth, tree, env, parent)
+    enter(meth, tree, env, parent; kwargs...)
 end
 enter(f::Function, env) = enter(first(methods(f)), env)
 
@@ -108,6 +117,75 @@ function print_shadowtree(shadowtree, highlight = nothing, inds = nothing)
     end
 end
 
+function node_repr(x)
+    isa(x,GlobalRef) ? string(x.mod,'.',x.name) : string(x)
+end
+
+function print_status(interp, highlight = nothing)
+    if interp.loctree === nothing
+        print_shadowtree(interp.shadowtree, highlight)
+    else
+        union = reduce(⤄,PostOrderDFS(interp.loctree))
+        file = SourceFile(interp.code)    
+        startline = compute_line(file, union.offset+1)
+        stopline = compute_line(file, union.offset+union.length+1)
+        if highlight != nothing
+            locnode = Tree(interp.loctree)[highlight].loc
+            offset = locnode.offset
+            
+            if offset != -1 % UInt32
+                offsetline = compute_line(file, offset+1)
+                startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])-1
+                stopoffset = endof(interp.code)
+                if offsetline + 3 < endof(file.offsets)
+                    stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
+                end
+                if stopline + 1 < endof(file.offsets)
+                    stopoffset = min(stopoffset, file.offsets[stopline + 1]-1)
+                end
+                # Algorithm:
+                # 1. PostOrderDFS over active shadow tree
+                # 2. Collect (range, ind) pairs of evaluated AST nodes
+                # 3. Take the completement of the union of all ranges and split
+                #    into source ranges.
+                # 4. Alternatingly print the original values and the new nodes
+                #    depending on which node is earlier.
+                ishighlight(x) = length(x[1]) >= length(highlight) && x[1][1:length(highlight)] == highlight
+                triples = collect(filter(y->(Lexer.normalize(y[1]) != SourceRange()),
+                    map(filter(x->x[2].val && !ishighlight(x),
+                    indenumerate(PostOrderDFS(interp.shadowtree.shadow)))) do x
+                        loc, val = Tree(interp.loctree)[x[1]],Tree(interp.shadowtree.tree)[x[1]]
+                        loc, :green, val
+                    end))
+
+                # Special handling for highlight
+                if Lexer.normalize(Tree(interp.loctree)[highlight]) != SourceRange()
+                    push!(triples,(Tree(interp.loctree)[highlight],:yellow,Tree(interp.shadowtree.tree)[highlight]))
+                end
+                sort!(triples, by = x->Lexer.normalize(x[1]).offset)
+
+                append!(triples,map(
+                    Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),map(x->x[1],triples))) do x
+                    off = x.offset
+                    (x,:white,interp.code[off+1:(off+x.length)])
+                end)
+                sort!(triples, by = x->Lexer.normalize(x[1]).offset)
+                for piece in triples
+                    print_with_color(piece[2],node_repr(piece[3]))
+                end
+                
+                #print_with_color(:white,interp.code[startoffset:offset])
+                #h = Tree(interp.shadowtree)[highlight]
+                #print_with_color(:yellow,node_repr(h.tree.x))
+                #print_with_color(:white,interp.code[(offset+length+1):stopoffset])
+                println()
+                return
+            end
+        end
+        println(join(map(bytestring,file[startline:stopline]),""))
+    end
+end
+
 function next_expr!(interp)
     x, next_it = next(interp.it, interp.cur_state)
     interp.cur_state = next_it
@@ -121,6 +199,16 @@ function find_label_index(tree, label)
         end
     end
     error("Label not found")
+end
+
+function goto!(interp, target)
+    # Reset shadowtree
+    interp.shadowtree, interp.it = make_shadowtree(interp.ast)
+    lind = find_label_index(interp.ast, target)
+    
+    # next_expr! below will move past the label node
+    interp.cur_state = next(interp.it,(false,nothing,[lind]))[2]
+    return done!(interp)
 end
 
 function step_expr(interp)
@@ -159,17 +247,24 @@ function step_expr(interp)
         elseif node.head == :gotoifnot
             ret = node
             if !node.args[1]
-                # Reset shadowtree
-                interp.shadowtree, interp.it = make_shadowtree(interp.ast)
-                lind = find_label_index(interp.ast, node.args[2])
-                
-                # next_expr! below will move past the label node
-                interp.cur_state = next(interp.it,(false,nothing,[lind]))[2]
-                return done!(interp)
+                return goto!(interp, node.args[2])
+            end
+        elseif node.head == :call
+            # Don't go through eval since this may have unqouted, symbols and
+            # exprs
+            f = to_function(node.args[1])
+            if isa(f, IntrinsicFunction)
+                ret = eval(node)
+            else    
+                ret = (node.args[2:end]...)
             end
         else
             ret = eval(node)
         end
+    elseif isa(node, GotoNode)
+        return goto!(interp, node.label)
+    elseif isa(node, QuoteNode)
+        ret = node.value
     else
         ret = eval(node)
     end
@@ -181,12 +276,26 @@ function next_statement!(interp)
     move_past = ind[1]
     while step_expr(interp)
         ind, node = interp.next_expr
-        if ind[1] > move_past
+        if ind[1] != move_past
             return true
         end
     end
     return false
 end
+
+function next_call!(interp)
+    ind, node = interp.next_expr
+    move_past = ind[1]
+    while step_expr(interp)
+        ind, node = interp.next_expr
+        if isa(node, Expr) && node.head == :call
+            return true
+        end
+    end
+    return false
+end
+
+
 
 function evaluated!(interp, ret)
     ind, node = interp.next_expr
@@ -225,7 +334,31 @@ function vatuple_name(k::Expr)
     end
     k
 end
-    
+
+function reparse_meth(meth)
+    file, line = functionloc(meth)
+    contents = open(readall, file)
+    buf = IOBuffer(contents)
+    for _ in line:-1:2
+        readuntil(buf,'\n')
+    end
+    ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
+    res = Parser.parse(ts)
+    parsedexpr = res.expr
+    parsedloc = res.loc
+    loweredast = Base.uncompressed_ast(meth.func.code).args[3]
+    thecalls = collect(filter(x->isexpr(x[2],:call),indenumerate(PostOrderDFS(parsedexpr))))
+    thecalls = thecalls[2:end]
+    loctree = treemap(PostOrderDFS(loweredast)) do node, childlocs
+        if isexpr(node, :call)
+            candidate = shift!(thecalls)
+            Tree(parsedloc)[candidate[1]]
+        else
+            SourceNode(SourceRange(),childlocs)
+        end
+    end
+    loctree, contents
+end
 
 function enter_call_expr(interp, expr)
     f = to_function(expr.args[1])
@@ -244,7 +377,13 @@ function enter_call_expr(interp, expr)
     if (!isa(f, IntrinsicFunction) && !isa(f,Function)) || isgeneric(f)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
-        method = which(f, argtypes)
+        method = try
+            which(f, argtypes)
+        catch err
+            println(f)
+            println(argtypes)
+            rethrow(err)
+        end
         if !isa(f,Function)
           argtypes = Tuple{_Typeof(f), argtypes.parameters...}
           args = allargs
@@ -273,7 +412,8 @@ function enter_call_expr(interp, expr)
             sparams[lenv[i].name] = lenv[i+1]
             i += 2
         end
-        newinterp = enter(method,Environment(env,sparams),interp)
+        loctree, code = reparse_meth(method)
+        newinterp = enter(method,Environment(env,sparams),interp, loctree = loctree, code = code)
         return newinterp
     end
     nothing
@@ -291,6 +431,8 @@ function print_backtrace(interp)
         interp = get(interp.parent)
     end
 end
+
+include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
 
 function RunDebugREPL(interp)
     prompt = "debug > "
@@ -319,7 +461,7 @@ function RunDebugREPL(interp)
             body = parse(command[2:end])
             f = Expr(:->,Expr(:tuple,keys(interp.env.locals)...,keys(interp.env.sparams)...),
                 body)
-            lam = eval(f)
+            lam = interp.meth.func.code.module.eval(f)
             einterp = enter(nothing,Base.uncompressed_ast(lam.code).args[3],interp.env,interp)
             try
                 show(finish!(einterp))
@@ -337,7 +479,7 @@ function RunDebugREPL(interp)
                     x = enter_call_expr(interp, expr)
                     if x !== nothing
                         interp = x
-                        print_shadowtree(interp.shadowtree, interp.next_expr[1])
+                        print_status(interp, interp.next_expr[1])
                         return true
                     end
                 end
@@ -346,8 +488,16 @@ function RunDebugREPL(interp)
             print_backtrace(interp)
             println()
             return true
+        elseif command == "loc"
+            w = create_widget(interp.loctree,interp.code)
+            TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
+                Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
+                ))
+            return true
         end
-        if command == "n" ? !next_statement!(interp) : !step_expr(interp)
+        if command == "n" ? !next_statement!(interp) :
+           command == "nc" ? !next_call!(interp) : 
+           !step_expr(interp)
             if isnull(interp.parent)
                 LineEdit.transition(s, :abort)
             else
@@ -358,7 +508,8 @@ function RunDebugREPL(interp)
         end
         curind = interp.next_expr[1][1]
         range = max(1,curind-2):curind+3
-        print_shadowtree(interp.shadowtree, interp.next_expr[1], range)
+        #print_shadowtree(interp.shadowtree, interp.next_expr[1], range)
+        print_status(interp, interp.next_expr[1])
         println()
         return true
     end
@@ -366,7 +517,8 @@ function RunDebugREPL(interp)
     b = Dict{Any,Any}[LineEdit.default_keymap, LineEdit.escape_defaults]
     panel.keymap_dict = LineEdit.keymap(b)
 
-    print_shadowtree(interp.shadowtree, interp.next_expr[1])
+    #print_shadowtree(interp.shadowtree, interp.next_expr[1])
+    print_status(interp, interp.next_expr[1])
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel]))
 end
 
@@ -398,6 +550,15 @@ function finish!(interp::Interpreter; print_step::Bool = false, recursive = fals
         print_step && print_shadowtree(interp.shadowtree, interp.next_expr[1])
     end
     interp.retval
+end
+
+macro enter(arg)
+    @assert isa(arg, Expr) && arg.head == :call
+    quote
+        theargs = $(esc(Expr(:tuple,arg.args...)))
+        ASTInterpreter.RunDebugREPL(
+            ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...)))
+    end
 end
 
 end
