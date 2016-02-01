@@ -68,7 +68,7 @@ end
 
 function make_shadowtree(tree)
     resulttree = copy(tree)
-    annotations = AbstractTrees.make_annotations(resulttree, false) do node, parent_ev
+    annotations = AbstractTrees.make_annotations(resulttree, resulttree, false) do node, parent, parent_ev
         if parent_ev
             return parent_ev
         end
@@ -76,6 +76,9 @@ function make_shadowtree(tree)
             isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
             node.head == :inbounds)
+            unevaluated = false
+        end
+        if (isa(node, GenSym) || isa(node, Symbol)) && isexpr(parent,:(=)) && parent.args[1] == node
             unevaluated = false
         end
         !unevaluated
@@ -88,12 +91,18 @@ end
 function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
     
+    @show it
+    @show start(it)
+    
     interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing)
     ind, node = next_expr!(interp)
+    @show ind, node
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
     end
+    display(interp.shadowtree.shadow)
+    @show ind, node
     interp
 end
 function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
@@ -121,63 +130,203 @@ function node_repr(x)
     isa(x,GlobalRef) ? string(x.mod,'.',x.name) : string(x)
 end
 
+abstract ReplacementLoc
+
+immutable SimpleReplacementLoc <: ReplacementLoc
+    replacing::SourceRange
+    before::AbstractString
+    after::AbstractString
+end
+Lexer.normalize(x::ReplacementLoc) = x.replacing
+Lexer.merge(x::ReplacementLoc,y::ReplacementLoc) =
+    Lexer.merge(Lexer.normalize(x),Lexer.normalize(y))
+Lexer.merge(x,y::ReplacementLoc) = Lexer.merge(x,Lexer.normalize(y))
+Lexer.merge(x::ReplacementLoc,y) = Lexer.merge(Lexer.normalize(x),y)
+
+# SequencingReplacementLoc
+type SRLoc <: ReplacementLoc
+    replacing::SourceRange
+    sequence::Vector{Any}
+    lastidx::Int
+end
+
+function sequence!(s::SRLoc, ind)
+    sidx = findnext(x->x==0,s.sequence,s.lastidx+1)
+    s.sequence[sidx] = ind
+    s.lastidx = sidx
+    s
+end
+
+immutable Coloring
+    x
+    color::Symbol
+end
+Base.print(io::IO, c::Coloring) = print_with_color(c.color, string(c.x))
+Base.show_unquoted(io::IO, c::Coloring, x, y) =
+    print_with_color(c.color, sprint(Base.show_unquoted, c.x, x, y))
+
+function annotate_highlights!(x, highlights)
+    wrapcolor = nothing
+    for highlight in highlights
+        if isempty(highlight[1])
+            wrapcolor = highlight[2]
+        else
+            Tree(x)[highlight[1]] = Coloring(Tree(x)[highlight[1]], highlight[2])
+        end
+    end
+    wrapcolor == nothing ? x : Coloring(x, wrapcolor)
+end
+
 function print_status(interp, highlight = nothing)
     if interp.loctree === nothing
         print_shadowtree(interp.shadowtree, highlight)
     else
-        union = reduce(⤄,PostOrderDFS(interp.loctree))
-        file = SourceFile(interp.code)    
+        union = Lexer.normalize(reduce(⤄,PostOrderDFS(interp.loctree)))
+        file = SourceFile(interp.code)
         startline = compute_line(file, union.offset+1)
         stopline = compute_line(file, union.offset+union.length+1)
         if highlight != nothing
-            locnode = Tree(interp.loctree)[highlight].loc
-            offset = locnode.offset
-            
+            x = AbstractTrees.getindexhighest(Tree(interp.loctree),highlight)
+            highlighstart = x[1]
+            while Lexer.normalize(Tree(interp.loctree)[highlighstart]) == SourceRange()
+                highlighstart = highlighstart[1:(end-1)]
+                !isempty(highlighstart) || break
+            end
+            locnode = Tree(interp.loctree)[highlighstart]
+            offset = Lexer.normalize(locnode).offset
+
             if offset != -1 % UInt32
                 offsetline = compute_line(file, offset+1)
                 startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])-1
-                stopoffset = endof(interp.code)
+                stopoffset = endof(interp.code)-1
                 if offsetline + 3 < endof(file.offsets)
                     stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
                 end
                 if stopline + 1 < endof(file.offsets)
                     stopoffset = min(stopoffset, file.offsets[stopline + 1]-1)
                 end
-                # Algorithm:
-                # 1. PostOrderDFS over active shadow tree
-                # 2. Collect (range, ind) pairs of evaluated AST nodes
-                # 3. Take the completement of the union of all ranges and split
-                #    into source ranges.
-                # 4. Alternatingly print the original values and the new nodes
-                #    depending on which node is earlier.
-                ishighlight(x) = length(x[1]) >= length(highlight) && x[1][1:length(highlight)] == highlight
-                triples = collect(filter(y->(Lexer.normalize(y[1]) != SourceRange()),
-                    map(filter(x->x[2].val && !ishighlight(x),
-                    indenumerate(PostOrderDFS(interp.shadowtree.shadow)))) do x
-                        loc, val = Tree(interp.loctree)[x[1]],Tree(interp.shadowtree.tree)[x[1]]
-                        loc, :green, val
-                    end))
 
-                # Special handling for highlight
-                if Lexer.normalize(Tree(interp.loctree)[highlight]) != SourceRange()
-                    push!(triples,(Tree(interp.loctree)[highlight],:yellow,Tree(interp.shadowtree.tree)[highlight]))
-                end
-                sort!(triples, by = x->Lexer.normalize(x[1]).offset)
-
-                append!(triples,map(
-                    Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),map(x->x[1],triples))) do x
-                    off = x.offset
-                    (x,:white,interp.code[off+1:(off+x.length)])
-                end)
-                sort!(triples, by = x->Lexer.normalize(x[1]).offset)
-                for piece in triples
-                    print_with_color(piece[2],node_repr(piece[3]))
+                ###### New Algorithm
+                idxstartwiwth(idxs, start) = length(idxs) >= length(start) && idxs[1:length(start)] == start
+                ishighlight(x) = idxstartwiwth(x,highlight)
+                
+                # Figure out all indices we want to print
+                indices = Set{Vector{Int}}()
+                srlocs = Set{SRLoc}()
+                locs = Vector{Any}()
+                highlighting = Vector{Any}()
+                for (ind, isevaluated) in indenumerate(PostOrderDFS(interp.shadowtree.shadow))
+                    if (ishighlight(ind) && length(ind)==length(highlight)) ||
+                       (!ishighlight(ind) && isevaluated.val)
+                        orgind = copy(ind)
+                        while !isempty(ind) && try
+                                Lexer.normalize(Tree(interp.loctree)[ind])
+                            catch e
+                                isa(e, BoundsError) || rethrow(e)
+                                SourceRange()
+                            end == SourceRange()
+                            ind = ind[1:end-1]
+                        end
+                        locnode = Tree(interp.loctree)[ind]
+                        if Lexer.normalize(locnode) == SourceRange() || ind == []
+                            continue
+                        end
+                        if Lexer.normalize(locnode).offset > stopoffset
+                            continue
+                        end
+                        push!(highlighting,(ind, orgind, ishighlight(orgind) ? :yellow : :green))
+                        if isa(locnode.loc, SRLoc)
+                            if !ishighlight(orgind)
+                                continue
+                            end
+                            r = locnode.loc
+                            r in srlocs && continue
+                            push!(srlocs, r)
+                        else
+                            r = ind
+                            r in indices && continue
+                            push!(indices, r)
+                        end
+                        push!(locs,(Lexer.normalize(locnode),r))
+                    end
                 end
                 
-                #print_with_color(:white,interp.code[startoffset:offset])
-                #h = Tree(interp.shadowtree)[highlight]
-                #print_with_color(:yellow,node_repr(h.tree.x))
-                #print_with_color(:white,interp.code[(offset+length+1):stopoffset])
+                # Collect indices that the srlocs care about as well
+                for srloc in srlocs
+                    for e in srloc.sequence
+                        if isa(e,Array)
+                            push!(indices, e)
+                        end
+                    end
+                end
+                
+                # Turn indices into an array. We will use indices into this
+                # array to associate them with the highlight information below
+                indices = sort(collect(indices), lt = lexless)
+                
+                # Remove any indices whose prefix is on the list
+                prev = [-1]
+                newinds = Any[]
+                for ind in indices
+                    if !idxstartwiwth(ind, prev)
+                        push!(newinds, ind)
+                        prev = ind
+                    end
+                end
+                indices = newinds
+                
+                ## Now go back and record highlight information
+                highlighinfo = Any[Any[] for _ in 1:length(indices)]
+                for x in highlighting
+                    ind = x[1]
+                    while true
+                        r = searchsorted(indices, ind, lt = lexless)
+                        if length(r) != 0
+                            push!(highlighinfo[first(r)],(x[2][(length(ind)+1):end],x[3]))
+                            break
+                        end
+                        if ind == []
+                            break
+                        end
+                        ind = ind[1:end-1]
+                    end
+                end
+                
+                sort!(locs, by = x->Lexer.normalize(x[1]).offset)
+                append!(locs,map(
+                    Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),map(x->x[1],locs))) do x
+                    off = x.offset
+                    code = interp.code[off+1:(off+x.length)]
+                    x, code
+                end)
+                sort!(locs, by = x->Lexer.normalize(x[1]).offset)
+                
+                function print_piece(piece)
+                    if isa(piece,Array)
+                        r = searchsorted(indices, piece, lt = lexless)
+                        val = Tree(interp.shadowtree.tree)[piece]
+                        if length(r) == 0
+                            return
+                        end
+                        highlights = highlighinfo[first(r)]
+                        print(annotate_highlights!(deepcopy(val), highlights))
+                    elseif isa(piece,Coloring)
+                        print(piece)
+                    else
+                        print_with_color(:white, piece)
+                    end
+                end
+                
+                for loc in locs
+                    if isa(loc[2],SRLoc)
+                        for x in loc[2].sequence
+                            print_piece(x)
+                        end
+                    else
+                        print_piece(loc[2])
+                    end
+                end
+                
                 println()
                 return
             end
@@ -241,7 +390,9 @@ function step_expr(interp)
             else
                 interp.env.locals[lhs] = rhs
             end
-            ret = rhs
+            # Special case hack for readability.
+            # ret = rhs
+            ret = node
         elseif node.head == :&
             ret = node
         elseif node.head == :gotoifnot
@@ -256,7 +407,7 @@ function step_expr(interp)
             if isa(f, IntrinsicFunction)
                 ret = eval(node)
             else    
-                ret = (node.args[2:end]...)
+                ret = f(node.args[2:end]...)
             end
         else
             ret = eval(node)
@@ -335,6 +486,65 @@ function vatuple_name(k::Expr)
     k
 end
 
+#TODO: The method should probably just start at it's first definition line
+function is_function_def(ex)
+    (isa(ex,Expr) && ex.head == :(=) && isexpr(ex.args[1],:call)) ||
+    isexpr(ex,:function)
+end
+
+function collectcalls(file, parsedexpr, parsedloc)
+    thecalls = Any[]
+    theassignments = Any[]
+    forlocs = Any[]
+    for (ind,node) in indenumerate(PostOrderDFS(parsedexpr))
+        if isexpr(node, :call) || isa(node, Tuple)
+            push!(thecalls, (Tree(parsedloc)[ind],node))
+        elseif isexpr(node, :for)
+            forrange = Lexer.normalize(Tree(parsedloc)[[ind]])
+            argrange = Lexer.normalize(Tree(parsedloc)[[ind;1]])
+            reprange = SourceRange(forrange.offset,argrange.offset+argrange.length-forrange.offset,0)
+            l = compute_line(file,reprange.offset)
+            padding = (reprange.offset - file.offsets[l])+1
+            # Lowering for x in y
+            loc = SRLoc(reprange,
+                [0, # A = y
+                string("\n"," "^padding),
+                0, # B = start(A)
+                string("\n"," "^padding,"while "),
+                0,  # !done(A,B)
+                string("\n"," "^(padding+4)),
+                0,  # C = next(A,B)
+                string("\n"," "^(padding+4)),
+                0,  # x = C.1
+                string("\n"," "^(padding+4)),
+                0], # B = C.2
+                0
+            )
+            
+            loc2 = SRLoc(reprange,[0],0)
+            
+            extracalls = [shift!(thecalls); shift!(thecalls);
+                (SourceRange(),node);                          # Start
+                (SourceRange(),node);                          # done
+                (loc,          node);                          # !
+                (SourceRange(),node)]                          # next
+
+            thecalls = vcat(extracalls,thecalls)
+            push!(thecalls, (SourceRange(),node))               # done
+            push!(thecalls, (SourceRange(),node))               # !
+            push!(thecalls, (loc2,node))                        # !
+            
+            push!(theassignments, (loc, node))                  # A = y
+            push!(theassignments, (loc, node))                  # B = start(A)
+            push!(theassignments, (loc, node))                  # gensym() = next()
+            push!(theassignments, (loc, node))        # gensym() = ans.1
+            push!(theassignments, (loc, node))        # gensym() = ans.2
+            push!(forlocs, (loc, loc2))
+        end
+    end
+    thecalls = thecalls[2:end], theassignments, forlocs
+end
+
 function reparse_meth(meth)
     file, line = functionloc(meth)
     contents = open(readall, file)
@@ -344,19 +554,71 @@ function reparse_meth(meth)
     end
     ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
     res = Parser.parse(ts)
+    if !is_function_def(res.expr)
+        # Retry parsing the line before
+        seekstart(buf)
+        for _ in (line-1):-1:2
+            readuntil(buf,'\n')
+        end
+        ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
+        res = Parser.parse(ts)
+    end
+    lower!(res)
     parsedexpr = res.expr
     parsedloc = res.loc
     loweredast = Base.uncompressed_ast(meth.func.code).args[3]
-    thecalls = collect(filter(x->isexpr(x[2],:call),indenumerate(PostOrderDFS(parsedexpr))))
-    thecalls = thecalls[2:end]
-    loctree = treemap(PostOrderDFS(loweredast)) do node, childlocs
+    thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
+    loctree = treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
         if isexpr(node, :call)
+            call = node.args[1]
+            if isa(call,TopNode) && call.name == :getfield
+                return SourceNode(SourceRange(),childlocs)
+            end
+
             candidate = shift!(thecalls)
-            Tree(parsedloc)[candidate[1]]
+            if isa(candidate[1], SRLoc)
+                ASTInterpreter.sequence!(candidate[1], ind)
+                SourceNode(candidate[1],childlocs)
+            else
+                candidate[1]
+            end
+        elseif isexpr(node, :(=))
+            x = shift!(theassignments)[1]
+            if isa(x, SRLoc)
+                ASTInterpreter.sequence!(x, ind)
+                SourceNode(x,childlocs)
+            else
+                x
+            end
         else
             SourceNode(SourceRange(),childlocs)
         end
     end
+
+    function postprocess!(loctree, forlocs)
+        for (forloc,forloc2) in forlocs
+            # Add a location to the parent of !done
+            negind = forloc.sequence[5][1:(end-1)]
+            newloc1 = deepcopy(forloc)
+            newloc2 = deepcopy(forloc)
+            # TODO: This really needs to have a better way
+            newloc1.sequence[4] = ASTInterpreter.Coloring(newloc1.sequence[4],:yellow)
+            Tree(loctree)[negind] = SourceNode(newloc1,Tree(loctree)[negind].children)
+            # Next Hack
+            rind = forloc2.sequence[1]
+            negrind = rind[1:(end-1)]
+            newloc2.sequence[4] = string(forloc.sequence[4],"!")
+            newloc2.sequence[5] = rind
+            newloc3 = deepcopy(newloc2)
+            newloc3.sequence[4] = ASTInterpreter.Coloring(newloc3.sequence[4],:yellow)
+            Tree(loctree)[rind] = SourceNode(newloc2,Tree(loctree)[rind].children)
+            Tree(loctree)[negrind] = SourceNode(newloc3,Tree(loctree)[negrind].children)
+        end
+    end
+    postprocess!(loctree, forlocs)
+    # Make sure we have the whole bounds of the function
+    loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
+
     loctree, contents
 end
 
@@ -517,6 +779,14 @@ function RunDebugREPL(interp)
     b = Dict{Any,Any}[LineEdit.default_keymap, LineEdit.escape_defaults]
     panel.keymap_dict = LineEdit.keymap(b)
 
+    # Skip evaluated values (e.g. constants)
+    ind, node = interp.next_expr[1]
+    @show ind
+    @show interp.shadowtree.tree[ind]
+    while interp.shadowtree.shadow[ind].val
+        ind, node = next_expr!(interp)
+    end
+
     #print_shadowtree(interp.shadowtree, interp.next_expr[1])
     print_status(interp, interp.next_expr[1])
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel]))
@@ -560,5 +830,7 @@ macro enter(arg)
             ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...)))
     end
 end
+
+include("lowering.jl")
 
 end
