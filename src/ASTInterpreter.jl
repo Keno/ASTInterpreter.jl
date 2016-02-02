@@ -227,7 +227,8 @@ function print_status(interp, highlight = nothing)
                         if Lexer.normalize(locnode) == SourceRange() || ind == []
                             continue
                         end
-                        if Lexer.normalize(locnode).offset > stopoffset
+                        off = Lexer.normalize(locnode).offset
+                        if off > stopoffset || off < startoffset
                             continue
                         end
                         push!(highlighting,(ind, orgind, ishighlight(orgind) ? :yellow : :green))
@@ -526,16 +527,20 @@ function collectcalls(file, parsedexpr, parsedloc)
             
             push!(active_fors,(loc,active_reprange))
             
-            push!(thecalls,(SourceRange(),parent))                          # Start
-            push!(thecalls,(SourceRange(),parent))                          # done
-            push!(thecalls,(loc,          parent))                          # !
-            push!(thecalls,(SourceRange(),parent))                          # next
+            push!(thecalls,(SourceRange(),nothing))         # Start
+            push!(thecalls,(SourceRange(),nothing))         # done
+            push!(thecalls,(loc,          nothing))         # !
+            push!(thecalls,(SourceRange(),nothing))         # next
+            push!(thecalls,(SourceRange(), nothing))        # getfield
+            push!(thecalls,(SourceRange(), nothing))        # getfield
             
-            push!(theassignments, (loc, parent))                  # A = y
-            push!(theassignments, (loc, parent))                  # B = start(A)
-            push!(theassignments, (loc, parent))                  # gensym() = next()
-            push!(theassignments, (loc, parent))        # gensym() = ans.1
-            push!(theassignments, (loc, parent))        # gensym() = ans.2
+            push!(theassignments, (loc, nothing))                  # A = y
+            push!(theassignments, (loc, nothing))                  # B = start(A)
+            push!(theassignments, (loc, nothing))                  # gensym() = next()
+            push!(theassignments, (loc, nothing))        # gensym() = ans.1
+            push!(theassignments, (loc, nothing))        # gensym() = ans.2
+        elseif isexpr(node, :(=))
+            push!(theassignments, (Tree(parsedloc)[ind],node))
         end
         
         # Now that we've processed the body, insert the end-of-body iteration
@@ -543,9 +548,9 @@ function collectcalls(file, parsedexpr, parsedloc)
         if isexpr(node, :for)
             active_forloc, active_reprange = pop!(active_fors)
             loc2 = SRLoc(active_reprange,[0;],0)
-            push!(thecalls, (SourceRange(),node))               # done
-            push!(thecalls, (SourceRange(),node))               # !
-            push!(thecalls, (loc2,node))                        # !
+            push!(thecalls, (SourceRange(),nothing))               # done
+            push!(thecalls, (SourceRange(),nothing))               # !
+            push!(thecalls, (loc2,nothing))                        # !
             push!(forlocs, (active_forloc, loc2))
             active_forloc = nothing
         end

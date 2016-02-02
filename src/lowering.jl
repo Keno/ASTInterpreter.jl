@@ -56,6 +56,9 @@ function do_lowering(ex)
         @assert length((¬ex).args) == 3
         cs = collect(children(ex))
         transformed_ex = ⨳(:call,cs[2],cs[1],cs[3])
+    elseif (¬ex).head == :tuple
+        transformed_ex = ⨳(:call,SourceExpr(TopNode(:tuple),SourceRange())) ⪥ ex
+        transformed_ex
     else
         ex
     end
