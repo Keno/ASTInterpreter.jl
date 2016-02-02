@@ -91,18 +91,14 @@ end
 function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
     
-    @show it
-    @show start(it)
-    
     interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing)
     ind, node = next_expr!(interp)
-    @show ind, node
+
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
     end
-    display(interp.shadowtree.shadow)
-    @show ind, node
+
     interp
 end
 function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
@@ -294,7 +290,8 @@ function print_status(interp, highlight = nothing)
                 
                 sort!(locs, by = x->Lexer.normalize(x[1]).offset)
                 append!(locs,map(
-                    Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),map(x->x[1],locs))) do x
+                    Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),
+                    filter(x->Lexer.normalize(x).offset >= startoffset, map(x->x[1],locs)))) do x
                     off = x.offset
                     code = interp.code[off+1:(off+x.length)]
                     x, code
@@ -496,17 +493,24 @@ function collectcalls(file, parsedexpr, parsedloc)
     thecalls = Any[]
     theassignments = Any[]
     forlocs = Any[]
+    active_forloc = nothing
+    active_reprange = nothing
     for (ind,node) in indenumerate(PostOrderDFS(parsedexpr))
+        parent = Tree(parsedexpr)[ind[1:end-1]]
         if isexpr(node, :call) || isa(node, Tuple)
             push!(thecalls, (Tree(parsedloc)[ind],node))
-        elseif isexpr(node, :for)
-            forrange = Lexer.normalize(Tree(parsedloc)[[ind]])
-            argrange = Lexer.normalize(Tree(parsedloc)[[ind;1]])
-            reprange = SourceRange(forrange.offset,argrange.offset+argrange.length-forrange.offset,0)
-            l = compute_line(file,reprange.offset)
-            padding = (reprange.offset - file.offsets[l])+1
+        end
+        # If our parent is a for and we're the first child, insert, the entry
+        # iteration lowering now.
+        if isexpr(parent, :for) && ind[end] == 1
+            @show ind
+            forrange = Lexer.normalize(Tree(parsedloc)[ind[1:end-1]])
+            argrange = Lexer.normalize(Tree(parsedloc)[[ind]])
+            active_reprange = SourceRange(forrange.offset,argrange.offset+argrange.length-forrange.offset,0)
+            l = compute_line(file,active_reprange.offset)
+            padding = (active_reprange.offset - file.offsets[l])+1
             # Lowering for x in y
-            loc = SRLoc(reprange,
+            loc = SRLoc(active_reprange,
                 [0, # A = y
                 string("\n"," "^padding),
                 0, # B = start(A)
@@ -521,25 +525,31 @@ function collectcalls(file, parsedexpr, parsedloc)
                 0
             )
             
-            loc2 = SRLoc(reprange,[0],0)
+            active_forloc = loc
             
-            extracalls = [shift!(thecalls); shift!(thecalls);
-                (SourceRange(),node);                          # Start
-                (SourceRange(),node);                          # done
-                (loc,          node);                          # !
-                (SourceRange(),node)]                          # next
-
-            thecalls = vcat(extracalls,thecalls)
+            push!(thecalls,(SourceRange(),parent))                          # Start
+            push!(thecalls,(SourceRange(),parent))                          # done
+            push!(thecalls,(loc,          parent))                          # !
+            push!(thecalls,(SourceRange(),parent))                          # next
+            
+            push!(theassignments, (loc, parent))                  # A = y
+            push!(theassignments, (loc, parent))                  # B = start(A)
+            push!(theassignments, (loc, parent))                  # gensym() = next()
+            push!(theassignments, (loc, parent))        # gensym() = ans.1
+            push!(theassignments, (loc, parent))        # gensym() = ans.2
+        end
+        
+        # Now that we've processed the body, insert the end-of-body iteration
+        # stuff
+        if isexpr(node, :for)
+            @show (node,ind)
+            loc2 = SRLoc(active_reprange,[0;],0)
             push!(thecalls, (SourceRange(),node))               # done
             push!(thecalls, (SourceRange(),node))               # !
             push!(thecalls, (loc2,node))                        # !
-            
-            push!(theassignments, (loc, node))                  # A = y
-            push!(theassignments, (loc, node))                  # B = start(A)
-            push!(theassignments, (loc, node))                  # gensym() = next()
-            push!(theassignments, (loc, node))        # gensym() = ans.1
-            push!(theassignments, (loc, node))        # gensym() = ans.2
-            push!(forlocs, (loc, loc2))
+            @assert active_forloc !== nothing
+            push!(forlocs, (active_forloc, loc2))
+            active_forloc = nothing
         end
     end
     thecalls = thecalls[2:end], theassignments, forlocs
