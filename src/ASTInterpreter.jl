@@ -493,8 +493,7 @@ function collectcalls(file, parsedexpr, parsedloc)
     thecalls = Any[]
     theassignments = Any[]
     forlocs = Any[]
-    active_forloc = nothing
-    active_reprange = nothing
+    active_fors = Any[]
     for (ind,node) in indenumerate(PostOrderDFS(parsedexpr))
         parent = Tree(parsedexpr)[ind[1:end-1]]
         if isexpr(node, :call) || isa(node, Tuple)
@@ -525,7 +524,7 @@ function collectcalls(file, parsedexpr, parsedloc)
                 0
             )
             
-            active_forloc = loc
+            push!(active_fors,(loc,active_reprange))
             
             push!(thecalls,(SourceRange(),parent))                          # Start
             push!(thecalls,(SourceRange(),parent))                          # done
@@ -542,12 +541,11 @@ function collectcalls(file, parsedexpr, parsedloc)
         # Now that we've processed the body, insert the end-of-body iteration
         # stuff
         if isexpr(node, :for)
-            @show (node,ind)
+            active_forloc, active_reprange = pop!(active_fors)
             loc2 = SRLoc(active_reprange,[0;],0)
             push!(thecalls, (SourceRange(),node))               # done
             push!(thecalls, (SourceRange(),node))               # !
             push!(thecalls, (loc2,node))                        # !
-            @assert active_forloc !== nothing
             push!(forlocs, (active_forloc, loc2))
             active_forloc = nothing
         end
