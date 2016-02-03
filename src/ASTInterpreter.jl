@@ -179,8 +179,8 @@ function print_status(interp, highlight = nothing)
     else
         union = Lexer.normalize(reduce(⤄,PostOrderDFS(interp.loctree)))
         file = SourceFile(interp.code)
-        startline = compute_line(file, union.offset+1)
-        stopline = compute_line(file, union.offset+union.length+1)
+        startline = compute_line(file, union.offset)
+        stopline = compute_line(file, union.offset+union.length)
         if highlight != nothing
             x = AbstractTrees.getindexhighest(Tree(interp.loctree),highlight)
             highlighstart = x[1]
@@ -192,8 +192,8 @@ function print_status(interp, highlight = nothing)
             offset = Lexer.normalize(locnode).offset
 
             if offset != -1 % UInt32
-                offsetline = compute_line(file, offset+1)
-                startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])-1
+                offsetline = compute_line(file, offset)
+                startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])
                 stopoffset = endof(interp.code)-1
                 if offsetline + 3 < endof(file.offsets)
                     stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
@@ -299,7 +299,15 @@ function print_status(interp, highlight = nothing)
                 end)
                 sort!(locs, by = x->Lexer.normalize(x[1]).offset)
                 
-                function print_piece(piece)
+                # Compute necessary data for line numbering
+                startline = compute_line(file, startoffset)
+                stopline = compute_line(file, stopoffset)
+                current_line = startline
+                stoplinelength = length(string(stopline))
+                
+                print(startline, " "^(stoplinelength-length(string(startline))+1))
+                
+                function print_piece(piece, implicit = true)
                     if isa(piece,Array)
                         r = searchsorted(indices, piece, lt = lexless)
                         val = Tree(interp.shadowtree.tree)[piece]
@@ -311,17 +319,28 @@ function print_status(interp, highlight = nothing)
                     elseif isa(piece,Coloring)
                         print(piece)
                     else
-                        print_with_color(:white, piece)
+                        lines = split(piece, '\n', keep = true)
+                        print_with_color(:white, lines[1])
+                        for line in lines[2:end]
+                            if !implicit
+                                current_line += 1
+                                lineno = string(current_line)
+                            else
+                                lineno = string('↳')
+                            end
+                            print('\n',lineno, " "^(stoplinelength-length(lineno)+1),line)
+                        end
                     end
                 end
+                
                 
                 for loc in locs
                     if isa(loc[2],SRLoc)
                         for x in loc[2].sequence
-                            print_piece(x)
+                            print_piece(x, true)
                         end
                     else
-                        print_piece(loc[2])
+                        print_piece(loc[2], false)
                     end
                 end
                 
@@ -503,9 +522,8 @@ function collectcalls(file, parsedexpr, parsedloc)
         # If our parent is a for and we're the first child, insert, the entry
         # iteration lowering now.
         if isexpr(parent, :for) && ind[end] == 1
-            @show ind
             forrange = Lexer.normalize(Tree(parsedloc)[ind[1:end-1]])
-            argrange = Lexer.normalize(Tree(parsedloc)[[ind]])
+            argrange = Lexer.normalize(Tree(parsedloc)[ind])
             active_reprange = SourceRange(forrange.offset,argrange.offset+argrange.length-forrange.offset,0)
             l = compute_line(file,active_reprange.offset)
             padding = (active_reprange.offset - file.offsets[l])+1
@@ -558,6 +576,26 @@ function collectcalls(file, parsedexpr, parsedloc)
     thecalls = thecalls[2:end], theassignments, forlocs
 end
 
+function expression_mismatch(loweredast, thecalls, theassignments, forlocs)
+    println("Failed to match parsed and lowered ASTs. This is a bug (or rather missing coverage).")
+    println("Falling back to unsugared mode.")
+    println("I attempted the following matching:")
+    loctree = treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
+        if isexpr(node, :call)
+            isempty(thecalls) && return nothing
+            candidate = shift!(thecalls)
+            println("Matching call $node with $candidate")
+        elseif isexpr(node, :(=))
+            isempty(theassignments) && return nothing
+            println("Matching assignment $node with $(shift!(theassignments))")
+        end
+        nothing
+    end
+end
+
+immutable MatchingError
+end
+
 function reparse_meth(meth)
     file, line = functionloc(meth)
     contents = open(readall, file)
@@ -581,31 +619,36 @@ function reparse_meth(meth)
     parsedloc = res.loc
     loweredast = Base.uncompressed_ast(meth.func.code).args[3]
     thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
-    loctree = treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
-        if isexpr(node, :call)
-            call = node.args[1]
-            if isa(call,TopNode) && call.name == :getfield
-                return SourceNode(SourceRange(),childlocs)
-            end
-
-            candidate = shift!(thecalls)
-            if isa(candidate[1], SRLoc)
-                ASTInterpreter.sequence!(candidate[1], ind)
-                SourceNode(candidate[1],childlocs)
+    loctree = try
+        treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
+            if isexpr(node, :call)
+                call = node.args[1]
+                isempty(thecalls) && throw(MatchingError())
+                candidate = shift!(thecalls)
+                if isa(candidate[1], SRLoc)
+                    ASTInterpreter.sequence!(candidate[1], ind)
+                    SourceNode(candidate[1],childlocs)
+                else
+                    candidate[1]
+                end
+            elseif isexpr(node, :(=))
+                isempty(theassignments) && throw(MatchingError())
+                x = shift!(theassignments)
+                x = x[1]
+                if isa(x, SRLoc)
+                    ASTInterpreter.sequence!(x, ind)
+                    SourceNode(x,childlocs)
+                else
+                    x
+                end
             else
-                candidate[1]
+                SourceNode(SourceRange(),childlocs)
             end
-        elseif isexpr(node, :(=))
-            x = shift!(theassignments)[1]
-            if isa(x, SRLoc)
-                ASTInterpreter.sequence!(x, ind)
-                SourceNode(x,childlocs)
-            else
-                x
-            end
-        else
-            SourceNode(SourceRange(),childlocs)
         end
+    catch err
+        isa(err, MatchingError) || rethrow(err)
+        expression_mismatch(loweredast, collectcalls(SourceFile(contents), parsedexpr, parsedloc)...)
+        nothing
     end
 
     function postprocess!(loctree, forlocs)
@@ -628,9 +671,11 @@ function reparse_meth(meth)
             Tree(loctree)[negrind] = SourceNode(newloc3,Tree(loctree)[negrind].children)
         end
     end
-    postprocess!(loctree, forlocs)
-    # Make sure we have the whole bounds of the function
-    loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
+    if loctree != nothing
+        postprocess!(loctree, forlocs)
+        # Make sure we have the whole bounds of the function
+        loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
+    end
 
     loctree, contents
 end
@@ -647,7 +692,6 @@ function enter_call_expr(interp, expr)
         else
             allargs = allargs[3:end]
         end
-        @show (f,allargs)
     end
     if (!isa(f, IntrinsicFunction) && !isa(f,Function)) || isgeneric(f)
         args = allargs[2:end]
@@ -794,8 +838,6 @@ function RunDebugREPL(interp)
 
     # Skip evaluated values (e.g. constants)
     ind, node = interp.next_expr[1]
-    @show ind
-    @show interp.shadowtree.tree[ind]
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
     end

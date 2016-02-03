@@ -41,7 +41,6 @@ function do_lowering(ex)
         else
             transformed_ex = ⨳(:call,SourceExpr(TopNode(:typed_vcat),SourceRange())) ⪥ ex
         end
-        @show transformed_ex
         transformed_ex
     elseif (¬ex).head == :(:)
         transformed_ex = ⨳(:call,SourceExpr(TopNode(:colon),SourceRange())) ⪥ ex
