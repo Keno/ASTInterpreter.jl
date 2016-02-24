@@ -102,7 +102,7 @@ function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree 
     interp
 end
 function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
-    ast = Base.uncompressed_ast(meth.func.code)
+    ast = Base.uncompressed_ast(meth.func.def)
     tree = ast.args[3]
     enter(meth, tree, env, parent; kwargs...)
 end
