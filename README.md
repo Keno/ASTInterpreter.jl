@@ -26,3 +26,14 @@ Commands:
 - ``` `stuff ``` runs `stuff` in the current frame's context
 
 This is a prototype, do not expect it to be correct or usable.
+
+#### Current Dependencies
+
+```julia
+Pkg.checkout("Reactive")
+Pkg.checkout("JuliaParser", "kf/loctrack")
+Pkg.clone("https://github.com/Keno/TerminalUI.jl.git")
+Pkg.clone("https://github.com/Keno/VT100.jl.git")
+Pkg.clone("https://github.com/Keno/AbstractTrees.jl.git")
+Pkg.clone("https://github.com/Keno/LineNumbers.jl.git")
+```
