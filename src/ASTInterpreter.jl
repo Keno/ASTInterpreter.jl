@@ -102,7 +102,7 @@ function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree 
     interp
 end
 function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
-    ast = Base.uncompressed_ast(meth.func.code)
+    ast = Base.uncompressed_ast(meth.func.def)
     tree = ast.args[3]
     enter(meth, tree, env, parent; kwargs...)
 end
@@ -137,6 +137,7 @@ Lexer.normalize(x::ReplacementLoc) = x.replacing
 Lexer.merge(x::ReplacementLoc,y::ReplacementLoc) =
     Lexer.merge(Lexer.normalize(x),Lexer.normalize(y))
 Lexer.merge(x,y::ReplacementLoc) = Lexer.merge(x,Lexer.normalize(y))
+Lexer.merge(x::ReplacementLoc,y::Void) = Lexer.merge(Lexer.normalize(x),y)
 Lexer.merge(x::ReplacementLoc,y) = Lexer.merge(Lexer.normalize(x),y)
 
 # SequencingReplacementLoc
@@ -576,11 +577,13 @@ function collectcalls(file, parsedexpr, parsedloc)
     thecalls = thecalls[2:end], theassignments, forlocs
 end
 
-function expression_mismatch(loweredast, thecalls, theassignments, forlocs)
+function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, forlocs)
     println("Failed to match parsed and lowered ASTs. This is a bug (or rather missing coverage).")
     println("Falling back to unsugared mode.")
     println("I attempted the following matching:")
-    loctree = treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
+    display(Tree(loweredast))
+    display(Tree(parsedexpr))
+    treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
         if isexpr(node, :call)
             isempty(thecalls) && return nothing
             candidate = shift!(thecalls)
@@ -598,7 +601,10 @@ end
 
 function reparse_meth(meth)
     file, line = functionloc(meth)
-    contents = open(readall, file)
+    if file === nothing
+        return nothing, ""
+    end
+    contents = open(readstring, file)
     buf = IOBuffer(contents)
     for _ in line:-1:2
         readuntil(buf,'\n')
@@ -617,7 +623,7 @@ function reparse_meth(meth)
     lower!(res)
     parsedexpr = res.expr
     parsedloc = res.loc
-    loweredast = Base.uncompressed_ast(meth.func.code).args[3]
+    loweredast = Base.uncompressed_ast(meth.func.def).args[3]
     thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
     loctree = try
         treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
@@ -647,7 +653,7 @@ function reparse_meth(meth)
         end
     catch err
         isa(err, MatchingError) || rethrow(err)
-        expression_mismatch(loweredast, collectcalls(SourceFile(contents), parsedexpr, parsedloc)...)
+        expression_mismatch(loweredast, parsedexpr, collectcalls(SourceFile(contents), parsedexpr, parsedloc)...)
         nothing
     end
 
@@ -693,7 +699,7 @@ function enter_call_expr(interp, expr)
             allargs = allargs[3:end]
         end
     end
-    if (!isa(f, IntrinsicFunction) && !isa(f,Function)) || isgeneric(f)
+    if !isa(f, Builtin)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
         method = try
@@ -709,7 +715,7 @@ function enter_call_expr(interp, expr)
           f = callfunc
         end
         # Construct the environment from the arguments
-        argnames = Base.uncompressed_ast(method.func.code).args[1]
+        argnames = Base.uncompressed_ast(method.func.def).args[1][2:end]
         env = Dict{Symbol,Any}()
         if length(args) < length(argnames) # Empty Vararg
             env[vatuple_name(argnames[end])] = ()
