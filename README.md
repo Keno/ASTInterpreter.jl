@@ -30,7 +30,9 @@ This is a prototype, do not expect it to be correct or usable.
 #### Current Dependencies
 
 ```julia
+Pkg.add("Reactive")
 Pkg.checkout("Reactive")
+Pkg.add("JuliaParser")
 Pkg.checkout("JuliaParser", "kf/loctrack")
 Pkg.clone("https://github.com/Keno/TerminalUI.jl.git")
 Pkg.clone("https://github.com/Keno/VT100.jl.git")
