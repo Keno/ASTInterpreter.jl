@@ -106,6 +106,11 @@ function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}();
     tree = ast.args[3]
     enter(meth, tree, env, parent; kwargs...)
 end
+function enter(linfo::LambdaInfo, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
+    ast = Base.uncompressed_ast(linfo)
+    tree = ast.args[3]
+    enter(linfo, tree, env, parent; kwargs...)
+end
 enter(f::Function, env) = enter(first(methods(f)), env)
 
 function print_shadowtree(shadowtree, highlight = nothing, inds = nothing)
@@ -746,7 +751,19 @@ end
 
 function print_backtrace(interp)
     while true
-        println(interp.meth)
+        if isa(interp.meth, LambdaInfo)
+            linfo = interp.meth
+            argnames = Base.uncompressed_ast(linfo).args[1][2:end]
+            spectypes = map(x->x[2], Base.uncompressed_ast(linfo).args[2][1][2:end])
+            print(linfo.name,'(')
+            for (argname, argT) in zip(argnames, spectypes)
+                print(argname)
+                !isa(argT, Any) && print("::", argT)
+            end
+            println(") at ",linfo.file,":",linfo.line)
+        else
+            println(interp.meth)
+        end
         for (name,var) in interp.env.locals
             println("- ",name,"::",typeof(var)," = ",var)
         end
