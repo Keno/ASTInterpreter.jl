@@ -53,7 +53,7 @@ Environment() = Environment(Dict{Symbol,Any}(),Dict{Symbol,Any}())
 Environment(locals,sparams) = Environment(locals,sparams,Dict{Int,Any}())
 
 type Interpreter
-    parent::Nullable{Interpreter}
+    parent::Nullable
     env::Environment
     meth::Any
     ast::Any
@@ -91,7 +91,8 @@ end
 function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
     
-    interp = Interpreter(Nullable{Interpreter}(parent), env, meth, tree, it,
+    parent = isa(parent, Nullable) ? parent : Nullable{typeof(parent)}(parent)
+    interp = Interpreter(parent, env, meth, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing)
     ind, node = next_expr!(interp)
 
@@ -107,6 +108,11 @@ function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}();
     enter(meth, tree, env, parent; kwargs...)
 end
 function enter(linfo::LambdaInfo, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
+    if linfo.inferred
+        f = (linfo.module).(linfo.name)
+        meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
+        return enter(meth, env, parent; kwargs...)
+    end
     ast = Base.uncompressed_ast(linfo)
     tree = ast.args[3]
     enter(linfo, tree, env, parent; kwargs...)
@@ -565,6 +571,9 @@ function collectcalls(file, parsedexpr, parsedloc)
             push!(theassignments, (loc, nothing))        # gensym() = ans.2
         elseif isexpr(node, :(=))
             push!(theassignments, (Tree(parsedloc)[ind],node))
+        elseif isexpr(node, :(&&))
+            push!(theassignments, (SourceRange(), nothing))
+            push!(theassignments, (SourceRange(), nothing))
         end
         
         # Now that we've processed the body, insert the end-of-body iteration
@@ -605,7 +614,13 @@ immutable MatchingError
 end
 
 function reparse_meth(meth)
-    file, line = functionloc(meth)
+    if isa(meth, LambdaInfo)
+        linfo = meth.def.def
+        file, line = Base.find_source_file(string(linfo.file)), linfo.line
+    else
+        linfo = meth.func.def
+        file, line = functionloc(meth)
+    end
     if file === nothing
         return nothing, ""
     end
@@ -628,7 +643,7 @@ function reparse_meth(meth)
     lower!(res)
     parsedexpr = res.expr
     parsedloc = res.loc
-    loweredast = Base.uncompressed_ast(meth.func.def).args[3]
+    loweredast = Base.uncompressed_ast(linfo).args[3]
     thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
     loctree = try
         treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
@@ -749,30 +764,35 @@ function enter_call_expr(interp, expr)
     nothing
 end
 
-function print_backtrace(interp)
-    while true
-        if isa(interp.meth, LambdaInfo)
-            linfo = interp.meth
-            argnames = Base.uncompressed_ast(linfo).args[1][2:end]
-            spectypes = map(x->x[2], Base.uncompressed_ast(linfo).args[2][1][2:end])
-            print(linfo.name,'(')
-            for (argname, argT) in zip(argnames, spectypes)
-                print(argname)
-                !isa(argT, Any) && print("::", argT)
-            end
-            println(") at ",linfo.file,":",linfo.line)
-        else
-            println(interp.meth)
-        end
-        for (name,var) in interp.env.locals
-            println("- ",name,"::",typeof(var)," = ",var)
-        end
-        if isnull(interp.parent)
-            break
-        end
-        interp = get(interp.parent)
+function print_linfo_desc(io::IO, linfo)
+    argnames = Base.uncompressed_ast(linfo).args[1][2:end]
+    spectypes = map(x->x[2], Base.uncompressed_ast(linfo).args[2][1][2:end])
+    print(linfo.name,'(')
+    first = true
+    for (argname, argT) in zip(argnames, spectypes)
+        first || print(io, ", ")
+        first = false
+        print(argname)
+        !isa(argT, Any) && print("::", argT)
     end
+    println(") at ",linfo.file,":",linfo.line)
 end
+
+function print_backtrace(interp::Interpreter)
+    if isa(interp.meth, LambdaInfo)
+        print_linfo_desc(STDOUT, interp.meth)
+    else
+        println(interp.meth)
+    end
+    for (name,var) in interp.env.locals
+        println("- ",name,"::",typeof(var)," = ",var)
+    end
+    if isnull(interp.parent)
+        return
+    end
+    print_backtrace(get(interp.parent))
+end
+print_backtrace(_::Void) = nothing
 
 include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
 
@@ -830,6 +850,10 @@ function RunDebugREPL(interp)
             print_backtrace(interp)
             println()
             return true
+        elseif command == "shadow"
+            print_shadowtree(interp.shadowtree, interp.next_expr[1])
+            println()
+            return true
         elseif command == "loc"
             w = create_widget(interp.loctree,interp.code)
             TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
@@ -860,7 +884,7 @@ function RunDebugREPL(interp)
     panel.keymap_dict = LineEdit.keymap(b)
 
     # Skip evaluated values (e.g. constants)
-    ind, node = interp.next_expr[1]
+    ind = interp.next_expr[1][1]
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
     end

@@ -4,27 +4,6 @@
 import JuliaParser: Lexer
 import JuliaParser.Lexer: ¬, ⨳, ⪥, SourceExpr
 
-#=
-'typed_vcat
-(lambda (e)
-  (let ((t (cadr e))
-        (a (cddr e)))
-    (expand-forms
-     (if (any (lambda (x)
-          (and (pair? x) (eq? (car x) 'row)))
-        a)
-         ;; convert nested hcat inside vcat to hvcat
-         (let ((rows (map (lambda (x)
-                            (if (and (pair? x) (eq? (car x) 'row))
-                                (cdr x)
-                                (list x)))
-                          a)))
-           `(call (top typed_hvcat) ,t
-                  (tuple ,.(map length rows))
-                  ,.(apply append rows)))
-         `(call (top typed_vcat) ,t ,@a)))))
-=#
-
 function do_lowering(ex)
     isa(¬ex, Expr) || return ex
     if (¬ex).head == :typed_vcat
@@ -45,6 +24,9 @@ function do_lowering(ex)
     elseif (¬ex).head == :(:)
         transformed_ex = ⨳(:call,SourceExpr(TopNode(:colon),SourceRange())) ⪥ ex
         transformed_ex
+    elseif (¬ex).head == :(.)
+        transformed_ex = ⨳(:call,SourceExpr(TopNode(:getfield),SourceRange())) ⪥ ex
+        transformed_ex
     elseif (¬ex).head == :ref
         transformed_ex = ⨳(:call,SourceExpr(TopNode(:getindex),SourceRange())) ⪥ ex
         transformed_ex
@@ -55,6 +37,8 @@ function do_lowering(ex)
         @assert length((¬ex).args) == 3
         cs = collect(children(ex))
         transformed_ex = ⨳(:call,cs[2],cs[1],cs[3])
+    elseif (¬ex).head == :(+=)
+        ⨳(:(=), SourceExpr((¬ex).args[1],SourceRange()), (⨳(:call, SourceExpr(:+,SourceRange())) ⪥ ex))
     elseif (¬ex).head == :tuple
         transformed_ex = ⨳(:call,SourceExpr(TopNode(:tuple),SourceRange())) ⪥ ex
         transformed_ex
