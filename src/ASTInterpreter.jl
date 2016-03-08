@@ -575,18 +575,6 @@ function collectcalls(file, parsedexpr, parsedloc)
             push!(theassignments, (SourceRange(), nothing))
             push!(theassignments, (SourceRange(), nothing))
         end
-        
-        # Now that we've processed the body, insert the end-of-body iteration
-        # stuff
-        if isexpr(node, :for)
-            active_forloc, active_reprange = pop!(active_fors)
-            loc2 = SRLoc(active_reprange,[0;],0)
-            push!(thecalls, (SourceRange(),nothing))               # done
-            push!(thecalls, (SourceRange(),nothing))               # !
-            push!(thecalls, (loc2,nothing))                        # !
-            push!(forlocs, (active_forloc, loc2))
-            active_forloc = nothing
-        end
     end
     thecalls = thecalls[2:end], theassignments, forlocs
 end
@@ -686,15 +674,6 @@ function reparse_meth(meth)
             # TODO: This really needs to have a better way
             newloc1.sequence[4] = ASTInterpreter.Coloring(newloc1.sequence[4],:yellow)
             Tree(loctree)[negind] = SourceNode(newloc1,Tree(loctree)[negind].children)
-            # Next Hack
-            rind = forloc2.sequence[1]
-            negrind = rind[1:(end-1)]
-            newloc2.sequence[4] = string(forloc.sequence[4],"!")
-            newloc2.sequence[5] = rind
-            newloc3 = deepcopy(newloc2)
-            newloc3.sequence[4] = ASTInterpreter.Coloring(newloc3.sequence[4],:yellow)
-            Tree(loctree)[rind] = SourceNode(newloc2,Tree(loctree)[rind].children)
-            Tree(loctree)[negrind] = SourceNode(newloc3,Tree(loctree)[negrind].children)
         end
     end
     if loctree != nothing
