@@ -688,14 +688,12 @@ end
 function enter_call_expr(interp, expr)
     f = to_function(expr.args[1])
     allargs = expr.args
-    callfunc = Base.call
     if is(f,Base._apply)
-        f = to_function(allargs[3])
-        callfunc = allargs[2]
-        if isa(allargs[4],Tuple) && length(allargs) == 4
-            allargs = [allargs[3], allargs[4]...]
+        f = to_function(allargs[2])
+        if isa(allargs[3],Tuple) && length(allargs) == 3
+            allargs = [allargs[2], allargs[3]...]
         else
-            allargs = allargs[3:end]
+            allargs = allargs[2:end]
         end
     end
     if !isa(f, Builtin)
@@ -708,13 +706,10 @@ function enter_call_expr(interp, expr)
             println(argtypes)
             rethrow(err)
         end
-        if !isa(f,Function)
-          argtypes = Tuple{_Typeof(f), argtypes.parameters...}
-          args = allargs
-          f = callfunc
-        end
+        argtypes = Tuple{_Typeof(f), argtypes.parameters...}
+        args = allargs
         # Construct the environment from the arguments
-        argnames = Base.uncompressed_ast(method.func.def).args[1][2:end]
+        argnames = Base.uncompressed_ast(method.func.def).args[1]
         env = Dict{Symbol,Any}()
         if length(args) < length(argnames) # Empty Vararg
             env[vatuple_name(argnames[end])] = ()
@@ -727,14 +722,12 @@ function enter_call_expr(interp, expr)
             end
             env[k] = v
         end
-        # Add static parameters to invironment
+        # Add static parameters to environment
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
-             argtypes, method.sig, method.tvars)::SimpleVector
+                           argtypes, method.sig, method.tvars)::SimpleVector
         sparams = Dict{Symbol, Any}()
-        i = 1
-        while i < length(lenv)
-            sparams[lenv[i].name] = lenv[i+1]
-            i += 2
+        for i = 1:length(lenv)
+            sparams[method.func.sparam_syms[i]] = lenv[i]
         end
         loctree, code = reparse_meth(method)
         newinterp = enter(method,Environment(env,sparams),interp, loctree = loctree, code = code)
@@ -802,8 +795,8 @@ function RunDebugREPL(interp)
             body = parse(command[2:end])
             f = Expr(:->,Expr(:tuple,keys(interp.env.locals)...,keys(interp.env.sparams)...),
                 body)
-            lam = interp.meth.func.code.module.eval(f)
-            einterp = enter(nothing,Base.uncompressed_ast(lam.code).args[3],interp.env,interp)
+            lam = interp.meth.func.module.eval(f)
+            einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],interp.env,interp)
             try
                 show(finish!(einterp))
                 println(); println()
@@ -816,7 +809,7 @@ function RunDebugREPL(interp)
         if command == "s"
             expr = interp.next_expr[2]
             if isa(expr, Expr)
-                if expr.head == :call
+                if expr.head == :call && !isa(expr.args[1],IntrinsicFunction)
                     x = enter_call_expr(interp, expr)
                     if x !== nothing
                         interp = x
