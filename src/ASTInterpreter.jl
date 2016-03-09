@@ -836,7 +836,7 @@ function RunDebugREPL(interp)
         if command == "n" ? !next_statement!(interp) :
            command == "nc" ? !next_call!(interp) : 
            !step_expr(interp)
-            if isnull(interp.parent)
+            if isnull(interp.parent) || get(interp.parent) == nothing
                 LineEdit.transition(s, :abort)
             else
                 oldinterp = interp
