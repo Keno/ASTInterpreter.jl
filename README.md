@@ -33,9 +33,10 @@ This is a prototype, do not expect it to be correct or usable.
 Pkg.add("Reactive")
 Pkg.checkout("Reactive")
 Pkg.add("JuliaParser")
-Pkg.checkout("JuliaParser", "kf/loctrack")
+Pkg.checkout("JuliaParser", "kf/loctrack") # If this complains, try Pkg.checkout("JuliaParser") first
 Pkg.clone("https://github.com/Keno/TerminalUI.jl.git")
 Pkg.clone("https://github.com/Keno/VT100.jl.git")
 Pkg.clone("https://github.com/Keno/AbstractTrees.jl.git")
 Pkg.clone("https://github.com/Keno/LineNumbers.jl.git")
+Pkg.clone("https://github.com/Keno/ASTInterpreter.jl.git")
 ```
