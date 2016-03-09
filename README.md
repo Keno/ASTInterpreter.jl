@@ -27,6 +27,10 @@ Commands:
 
 This is a prototype, do not expect it to be correct or usable.
 
+# Experimental mode
+
+There is an experimental UI mode accessible by setting `ASTInterpreter.fancy_mode = true`, which attempts to provide a better interface but is not currently not capable of handling all julia code. Use at your own peril.
+
 #### Current Dependencies
 
 ```julia

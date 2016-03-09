@@ -83,14 +83,14 @@ function make_shadowtree(tree)
         end
         !unevaluated
     end
-    shadowtree = AbstractTrees.ShadowTree(Tree(resulttree), Tree(annotations)) 
+    shadowtree = AbstractTrees.ShadowTree(Tree(resulttree), Tree(annotations))
     it = filter(x->!isa(x[2],LineNumberNode),indenumerate(PostOrderDFS(resulttree)))
-    shadowtree, it   
+    shadowtree, it
 end
 
 function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
-    
+
     parent = isa(parent, Nullable) ? parent : Nullable{typeof(parent)}(parent)
     interp = Interpreter(parent, env, meth, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing)
@@ -185,12 +185,74 @@ function annotate_highlights!(x, highlights)
     wrapcolor == nothing ? x : Coloring(x, wrapcolor)
 end
 
-function print_status(interp, highlight = nothing)
-    if interp.loctree === nothing
-        print_shadowtree(interp.shadowtree, highlight)
+function print_sourcecode(interp, highlight = nothing)
+    line = interp.meth.func.line
+    # Find a line number node previous to this expression
+    if highlight !== nothing
+        exprtree = interp.shadowtree.tree.x
+        for i = highlight[1]:-1:1
+            expr = exprtree.args[i]
+            if isa(expr, LineNumberNode)
+                line = expr.line
+                break
+            elseif isexpr(expr, :line)
+                line = expr.args[1]
+                break
+            end
+        end
+    end
+    file = SourceFile(interp.code)
+    startoffset, stopoffset = compute_source_offsets(interp, file.offsets[line],
+        interp.meth.func.line, line+3)
+
+    # Compute necessary data for line numbering
+    startline = compute_line(file, startoffset)
+    stopline = compute_line(file, stopoffset)
+    current_line = line
+    stoplinelength = length(string(stopline))
+
+    code = split(interp.code[(startoffset:stopoffset)+1],'\n')
+    lineno = startline
+
+    for textline in code
+        print_with_color(lineno == current_line ? :yellow : :white,
+            string(lineno, " "^(stoplinelength-length(lineno)+1)))
+        println(textline)
+        lineno += 1
+    end
+    println()
+end
+
+"""
+Determine the offsets in the source code to print, based on the offset of the
+currently highlighted part of the code, and the start and stop line of the
+entire function.
+"""
+function compute_source_offsets(interp, offset, startline, stopline; file = SourceFile(interp.code))
+    offsetline = compute_line(file, offset)
+    startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])
+    stopoffset = endof(interp.code)-1
+    if offsetline + 3 < endof(file.offsets)
+        stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
+    end
+    if stopline + 1 < endof(file.offsets)
+        stopoffset = min(stopoffset, file.offsets[stopline + 1]-1)
+    end
+    startoffset, stopoffset
+end
+
+global fancy_mode = false
+
+function print_status(interp, highlight = nothing; fancy = fancy_mode)
+    if !fancy && !isempty(interp.code)
+        print_sourcecode(interp, highlight)
+        println("About to run: ", interp.shadowtree[highlight].tree.x)
+    elseif interp.loctree === nothing
+            print_shadowtree(interp.shadowtree, highlight)
     else
         union = Lexer.normalize(reduce(⤄,PostOrderDFS(interp.loctree)))
         file = SourceFile(interp.code)
+        # Compute the start and stop line of the current function
         startline = compute_line(file, union.offset)
         stopline = compute_line(file, union.offset+union.length)
         if highlight != nothing
@@ -204,20 +266,14 @@ function print_status(interp, highlight = nothing)
             offset = Lexer.normalize(locnode).offset
 
             if offset != -1 % UInt32
-                offsetline = compute_line(file, offset)
-                startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])
-                stopoffset = endof(interp.code)-1
-                if offsetline + 3 < endof(file.offsets)
-                    stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
-                end
-                if stopline + 1 < endof(file.offsets)
-                    stopoffset = min(stopoffset, file.offsets[stopline + 1]-1)
-                end
+                startoffset, stopoffset =
+                    compute_source_offsets(interp, offset, startline,
+                        stopline, file = file)
 
                 ###### New Algorithm
                 idxstartwiwth(idxs, start) = length(idxs) >= length(start) && idxs[1:length(start)] == start
                 ishighlight(x) = idxstartwiwth(x,highlight)
-                
+
                 # Figure out all indices we want to print
                 indices = Set{Vector{Int}}()
                 srlocs = Set{SRLoc}()
@@ -259,7 +315,7 @@ function print_status(interp, highlight = nothing)
                         push!(locs,(Lexer.normalize(locnode),r))
                     end
                 end
-                
+
                 # Collect indices that the srlocs care about as well
                 for srloc in srlocs
                     for e in srloc.sequence
@@ -268,11 +324,11 @@ function print_status(interp, highlight = nothing)
                         end
                     end
                 end
-                
+
                 # Turn indices into an array. We will use indices into this
                 # array to associate them with the highlight information below
                 indices = sort(collect(indices), lt = lexless)
-                
+
                 # Remove any indices whose prefix is on the list
                 prev = [-1]
                 newinds = Any[]
@@ -283,7 +339,7 @@ function print_status(interp, highlight = nothing)
                     end
                 end
                 indices = newinds
-                
+
                 ## Now go back and record highlight information
                 highlighinfo = Any[Any[] for _ in 1:length(indices)]
                 for x in highlighting
@@ -300,7 +356,7 @@ function print_status(interp, highlight = nothing)
                         ind = ind[1:end-1]
                     end
                 end
-                
+
                 sort!(locs, by = x->Lexer.normalize(x[1]).offset)
                 append!(locs,map(
                     Lexer.sortedcomplement(SourceRange(startoffset,stopoffset-startoffset+1,0),
@@ -310,15 +366,15 @@ function print_status(interp, highlight = nothing)
                     x, code
                 end)
                 sort!(locs, by = x->Lexer.normalize(x[1]).offset)
-                
+
                 # Compute necessary data for line numbering
                 startline = compute_line(file, startoffset)
                 stopline = compute_line(file, stopoffset)
                 current_line = startline
                 stoplinelength = length(string(stopline))
-                
+
                 print(startline, " "^(stoplinelength-length(string(startline))+1))
-                
+
                 function print_piece(piece, implicit = true)
                     if isa(piece,Array)
                         r = searchsorted(indices, piece, lt = lexless)
@@ -344,8 +400,8 @@ function print_status(interp, highlight = nothing)
                         end
                     end
                 end
-                
-                
+
+
                 for loc in locs
                     if isa(loc[2],SRLoc)
                         for x in loc[2].sequence
@@ -355,7 +411,7 @@ function print_status(interp, highlight = nothing)
                         print_piece(loc[2], false)
                     end
                 end
-                
+
                 println()
                 return
             end
@@ -383,7 +439,7 @@ function goto!(interp, target)
     # Reset shadowtree
     interp.shadowtree, interp.it = make_shadowtree(interp.ast)
     lind = find_label_index(interp.ast, target)
-    
+
     # next_expr! below will move past the label node
     interp.cur_state = next(interp.it,(false,nothing,[lind]))[2]
     return done!(interp)
@@ -435,7 +491,7 @@ function step_expr(interp)
             f = to_function(node.args[1])
             if isa(f, IntrinsicFunction)
                 ret = eval(node)
-            else    
+            else
                 ret = f(node.args[2:end]...)
             end
         else
@@ -554,16 +610,16 @@ function collectcalls(file, parsedexpr, parsedloc)
                 0], # B = C.2
                 0
             )
-            
+
             push!(active_fors,(loc,active_reprange))
-            
+
             push!(thecalls,(SourceRange(),nothing))         # Start
             push!(thecalls,(SourceRange(),nothing))         # done
             push!(thecalls,(loc,          nothing))         # !
             push!(thecalls,(SourceRange(),nothing))         # next
             push!(thecalls,(SourceRange(), nothing))        # getfield
             push!(thecalls,(SourceRange(), nothing))        # getfield
-            
+
             push!(theassignments, (loc, nothing))                  # A = y
             push!(theassignments, (loc, nothing))                  # B = start(A)
             push!(theassignments, (loc, nothing))                  # gensym() = next()
@@ -580,6 +636,9 @@ function collectcalls(file, parsedexpr, parsedloc)
 end
 
 function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, forlocs)
+    if !fancy_mode
+        return nothing
+    end
     println("Failed to match parsed and lowered ASTs. This is a bug (or rather missing coverage).")
     println("Falling back to unsugared mode.")
     println("I attempted the following matching:")
@@ -834,7 +893,7 @@ function RunDebugREPL(interp)
             return true
         end
         if command == "n" ? !next_statement!(interp) :
-           command == "nc" ? !next_call!(interp) : 
+           command == "nc" ? !next_call!(interp) :
            !step_expr(interp)
             if isnull(interp.parent) || get(interp.parent) == nothing
                 LineEdit.transition(s, :abort)
