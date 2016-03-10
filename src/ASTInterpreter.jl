@@ -84,7 +84,7 @@ function make_shadowtree(tree)
         !unevaluated
     end
     shadowtree = AbstractTrees.ShadowTree(Tree(resulttree), Tree(annotations))
-    it = filter(x->!isa(x[2],LineNumberNode),indenumerate(PostOrderDFS(resulttree)))
+    it = filter(x->true,indenumerate(PostOrderDFS(resulttree)))
     shadowtree, it
 end
 
@@ -185,7 +185,7 @@ function annotate_highlights!(x, highlights)
     wrapcolor == nothing ? x : Coloring(x, wrapcolor)
 end
 
-function print_sourcecode(interp, highlight = nothing)
+function determine_line(interp, highlight)
     line = interp.meth.func.line
     # Find a line number node previous to this expression
     if highlight !== nothing
@@ -201,6 +201,12 @@ function print_sourcecode(interp, highlight = nothing)
             end
         end
     end
+    line
+end
+
+function print_sourcecode(interp, highlight = nothing)
+    line = determine_line(interp, highlight)
+
     file = SourceFile(interp.code)
     startoffset, stopoffset = compute_source_offsets(interp, file.offsets[line],
         interp.meth.func.line, line+3)
@@ -445,7 +451,7 @@ function goto!(interp, target)
     return done!(interp)
 end
 
-function step_expr(interp)
+function _step_expr(interp)
     ind, node = interp.next_expr
 
     if isa(node, Expr) && node.head == :return
@@ -504,8 +510,10 @@ function step_expr(interp)
     else
         ret = eval(node)
     end
-    evaluated!(interp, ret)
+    _evaluated!(interp, ret)
+    true
 end
+step_expr(interp) = (_step_expr(interp); done!(interp))
 
 function next_statement!(interp)
     ind, node = interp.next_expr
@@ -531,13 +539,49 @@ function next_call!(interp)
     return false
 end
 
+function changed_line(expr, line)
+    if isa(expr, LineNumberNode)
+        return expr.line != line
+    elseif isa(expr, Expr) && isexpr(expr, :line)
+        return expr.args[1] != line
+    else
+        return false
+    end
+end
 
+isgotonode(node) = isa(node, GotoNode) || isexpr(node, :gotoifnot)
 
-function evaluated!(interp, ret)
+function next_line!(interp)
+    didchangeline = false
+    line = determine_line(interp, interp.next_expr[1])
+    while !didchangeline
+        ind, node = interp.next_expr
+        # Skip evaluated values (e.g. constants)
+        while interp.shadowtree.shadow[ind].val
+            didchangeline = changed_line(node, line)
+            didchangeline && break
+            ind, node = next_expr!(interp)
+        end
+        didchangeline && break
+        ind, node = interp.next_expr
+        # If this is a goto node, step it and reevaluate
+        if isgotonode(node)
+            _step_expr(interp) || return false
+            didchangeline = line != determine_line(interp, interp.next_expr[1])
+        else
+            _step_expr(interp) || return false
+        end
+    end
+    done!(interp)
+    # Ok, we stepped to the next line. Now step through to the next call
+    next_call!(interp)
+end
+
+function _evaluated!(interp, ret)
     ind, node = interp.next_expr
     interp.shadowtree[ind] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
-    done!(interp)
 end
+evaluated!(interp, ret) = (_evaluated!(interp, ret); done!(interp))
 
 function done!(interp)
     ind, node = next_expr!(interp)
@@ -677,15 +721,23 @@ function reparse_meth(meth)
         readuntil(buf,'\n')
     end
     ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
-    res = Parser.parse(ts)
-    if !is_function_def(res.expr)
-        # Retry parsing the line before
-        seekstart(buf)
-        for _ in (line-1):-1:2
-            readuntil(buf,'\n')
-        end
-        ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
+    local res, ts
+    try
         res = Parser.parse(ts)
+        if !is_function_def(res.expr)
+            # Retry parsing the line before
+            seekstart(buf)
+            for _ in (line-1):-1:2
+                readuntil(buf,'\n')
+            end
+            ts = Lexer.TokenStream{Lexer.SourceLocToken}(buf)
+            res = Parser.parse(ts)
+        end
+    catch err
+        if !fancy_mode
+            return nothing, contents
+        end
+        rethrow(err)
     end
     lower!(res)
     parsedexpr = res.expr
@@ -865,19 +917,28 @@ function RunDebugREPL(interp)
             end
             return true
         end
-        if command == "s"
-            expr = interp.next_expr[2]
-            if isa(expr, Expr)
-                if expr.head == :call && !isa(expr.args[1],IntrinsicFunction)
-                    x = enter_call_expr(interp, expr)
-                    if x !== nothing
-                        interp = x
-                        print_status(interp, interp.next_expr[1])
-                        return true
+        if command == "si" || command == "s"
+            while true
+                expr = interp.next_expr[2]
+                if isa(expr, Expr)
+                    if expr.head == :call && !isa(expr.args[1],IntrinsicFunction)
+                        x = enter_call_expr(interp, expr)
+                        if x !== nothing
+                            interp = x
+                            print_status(interp, interp.next_expr[1])
+                            return true
+                        end
                     end
                 end
+                command == "si" && break
+                step_expr(interp) || break
             end
-        elseif command == "bt"
+            command = "se"
+        elseif command == "finish"
+            finish!(interp)
+            command = "se"
+        end
+        if command == "bt"
             print_backtrace(interp)
             println()
             return true
@@ -891,10 +952,11 @@ function RunDebugREPL(interp)
                 Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
                 ))
             return true
-        end
-        if command == "n" ? !next_statement!(interp) :
+        elseif command == "ns" ? !next_statement!(interp) :
            command == "nc" ? !next_call!(interp) :
-           !step_expr(interp)
+           command == "n" ? !next_line!(interp) :
+           command == "se" ? !step_expr(interp) :
+            (print_with_color(:red,"\nUnknown command!\n"); false)
             if isnull(interp.parent) || get(interp.parent) == nothing
                 LineEdit.transition(s, :abort)
             else

@@ -18,12 +18,22 @@ end
 interp = enter(foo, Environment(Dict(:n => 20),Dict{Symbol,Any}()))
 ASTInterpreter.RunDebugREPL(interp)
 ```
-Commands:
-- `n` steps to the next statement
-- `s` steps to the next expression and into calls
-- blank steps to the next expression but skips calls
+Basic Commands:
+- `n` steps to the line
+- `s` steps into the next call
+- `finish` runs to the end of the function
 - `bt` shows a simple backtrace
 - ``` `stuff ``` runs `stuff` in the current frame's context
+
+Advanced commands:
+- `nc` steps to the next call
+- `ns` steps to the next statement
+- `se` does one expression step
+- `si` does the same but steps into a call if a call is the next expression
+- `shadow` shows the internal representation of the expression tree (for debugger debugging only)
+- `loc` shows the column data for the current top frame, in the same format
+  as JuliaParsers's testshell.
+
 
 This is a prototype, do not expect it to be correct or usable.
 
