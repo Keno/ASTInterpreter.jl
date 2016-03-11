@@ -448,6 +448,7 @@ function goto!(interp, target)
 
     # next_expr! below will move past the label node
     interp.cur_state = next(interp.it,(false,nothing,[lind]))[2]
+    next_expr!(interp)
     return done!(interp)
 end
 
@@ -513,7 +514,7 @@ function _step_expr(interp)
     _evaluated!(interp, ret)
     true
 end
-step_expr(interp) = (_step_expr(interp); done!(interp))
+step_expr(interp) = (r = _step_expr(interp); done!(interp); r)
 
 function next_statement!(interp)
     ind, node = interp.next_expr
@@ -583,8 +584,11 @@ function _evaluated!(interp, ret)
 end
 evaluated!(interp, ret) = (_evaluated!(interp, ret); done!(interp))
 
+"""
+Advance to the next evaluatable statement
+"""
 function done!(interp)
-    ind, node = next_expr!(interp)
+    ind, node = interp.next_expr
     # Skip evaluated values (e.g. constants)
     while interp.shadowtree.shadow[ind].val
         ind, node = next_expr!(interp)
@@ -894,6 +898,16 @@ function RunDebugREPL(interp)
 
     panel.hist = REPL.REPLHistoryProvider(Dict{Symbol,Any}(:debug => panel))
 
+    function done_stepping(s, interp)
+        if isnull(interp.parent) || get(interp.parent) == nothing
+            LineEdit.transition(s, :abort)
+        else
+            oldinterp = interp
+            interp = get(oldinterp.parent)
+            evaluated!(interp, oldinterp.retval)
+        end
+    end
+
     panel.on_done = (s,buf,ok)->begin
         line = takebuf_string(buf)
         if !ok || strip(line) == "q"
@@ -941,7 +955,8 @@ function RunDebugREPL(interp)
             command = "se"
         elseif command == "finish"
             finish!(interp)
-            command = "se"
+            done_stepping(s, interp)
+            return true
         end
         if command == "bt"
             print_backtrace(interp)
@@ -950,6 +965,9 @@ function RunDebugREPL(interp)
         elseif command == "shadow"
             print_shadowtree(interp.shadowtree, interp.next_expr[1])
             println()
+            return true
+        elseif command == "ind"
+            println("About to execute index", interp.next_expr[1])
             return true
         elseif command == "loc"
             w = create_widget(interp.loctree,interp.code)
@@ -962,13 +980,8 @@ function RunDebugREPL(interp)
            command == "n" ? !next_line!(interp) :
            command == "se" ? !step_expr(interp) :
             (print_with_color(:red,"\nUnknown command!\n"); false)
-            if isnull(interp.parent) || get(interp.parent) == nothing
-                LineEdit.transition(s, :abort)
-            else
-                oldinterp = interp
-                interp = get(oldinterp.parent)
-                evaluated!(interp, oldinterp.retval)
-            end
+            done_stepping(s, interp)
+            return true
         end
         curind = interp.next_expr[1][1]
         range = max(1,curind-2):curind+3
