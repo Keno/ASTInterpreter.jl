@@ -898,7 +898,7 @@ function RunDebugREPL(interp)
 
     panel.hist = REPL.REPLHistoryProvider(Dict{Symbol,Any}(:debug => panel))
 
-    function done_stepping(s, interp)
+    function done_stepping(s, interp; to_next_call = false)
         if isnull(interp.parent) || get(interp.parent) == nothing
             LineEdit.transition(s, :abort)
             interp = nothing
@@ -906,6 +906,9 @@ function RunDebugREPL(interp)
             oldinterp = interp
             interp = get(oldinterp.parent)
             evaluated!(interp, oldinterp.retval)
+            to_next_call && next_call!(interp)
+            print_status(interp, interp.next_expr[1])
+            println()
         end
         interp
     end
@@ -952,17 +955,15 @@ function RunDebugREPL(interp)
                     end
                 end
                 command == "si" && break
-                step_expr(interp) || break
+                if !step_expr(interp)
+                    interp = done_stepping(s, interp; to_next_call = true)
+                    return true
+                end
             end
             command = "se"
         elseif command == "finish"
             finish!(interp)
-            interp = done_stepping(s, interp)
-            if interp !== nothing
-                next_call!(interp)
-                print_status(interp, interp.next_expr[1])
-                println()
-            end
+            interp = done_stepping(s, interp; to_next_call = true)
             return true
         end
         if command == "bt"
@@ -987,12 +988,7 @@ function RunDebugREPL(interp)
            command == "n" ? !next_line!(interp) :
            command == "se" ? !step_expr(interp) :
             (print_with_color(:red,"\nUnknown command!\n"); false)
-            interp = done_stepping(s, interp)
-            if interp !== nothing
-                (command == "n") && next_call!(interp)
-                print_status(interp, interp.next_expr[1])
-                println()
-            end
+            interp = done_stepping(s, interp; to_next_call = command == "n")
             return true
         end
         print_status(interp, interp.next_expr[1])
