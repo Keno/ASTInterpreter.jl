@@ -45,11 +45,11 @@ end
 # EvaluationTree
 
 immutable Environment
-    locals::Dict{Symbol, Any}
+    locals::Dict{Symbol, Nullable{Any}}
     sparams::Dict{Symbol, Any}
     gensyms::Dict{Int, Any}
 end
-Environment() = Environment(Dict{Symbol,Any}(),Dict{Symbol,Any}())
+Environment() = Environment(Dict{Symbol,Nullable{Any}}(),Dict{Symbol,Any}())
 Environment(locals,sparams) = Environment(locals,sparams,Dict{Int,Any}())
 
 type Interpreter
@@ -469,12 +469,16 @@ function _step_expr(interp)
             ret = node
         elseif isa(node,GenSym)
             ret = interp.env.gensyms[node.id]
+        elseif haskey(interp.env.locals, node)
+            val = interp.env.locals[node]
+            if isnull(val)
+                error("local variable $node not defined")
+            end
+            ret = get(val)
+        elseif haskey(interp.env.sparams, node)
+            ret = interp.env.sparams[node]
         else
-            ret = haskey(interp.env.locals, node) ?
-                interp.env.locals[node] :
-                haskey(interp.env.sparams, node) ?
-                interp.env.sparams[node] :
-                eval(node)
+            ret = eval(node)
         end
     elseif isa(node, Expr)
         if node.head == :(=)
@@ -833,8 +837,9 @@ function enter_call_expr(interp, expr)
         argtypes = Tuple{_Typeof(f), argtypes.parameters...}
         args = allargs
         # Construct the environment from the arguments
-        argnames = Base.uncompressed_ast(method.func.def).args[1]
-        env = Dict{Symbol,Any}()
+        ast = Base.uncompressed_ast(method.func.def)
+        argnames = ast.args[1]
+        env = Dict{Symbol,Nullable{Any}}()
         if length(args) < length(argnames) # Empty Vararg
             env[vatuple_name(argnames[end])] = ()
         end
@@ -845,6 +850,11 @@ function enter_call_expr(interp, expr)
                 break
             end
             env[k] = v
+        end
+        # add local variables initially undefined
+        vinfo = ast.args[2][1]
+        for i = (length(argnames)+1):length(vinfo)
+            env[vinfo[i][1]] = Nullable{Any}()
         end
         # Add static parameters to environment
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
@@ -880,8 +890,24 @@ function print_backtrace(interp::Interpreter)
     else
         println(interp.meth)
     end
-    for (name,var) in interp.env.locals
-        println("  | ",name,"::",typeof(var)," = ",var)
+    for (name,val) in interp.env.locals
+        visible = true
+        sn = string(name)
+        if startswith(sn, "#")
+            lasthash = rsearchindex(sn, "#")
+            if lasthash == 1     # mangled names have 2 '#'s in them,
+                visible = false  # hidden names have 1.
+            end
+        end
+        if visible
+            print("  | ")
+            if isnull(val)
+                println(name, " is undefined")
+            else
+                val = get(val)
+                println(name, "::", typeof(val), " = ", val)
+            end
+        end
     end
     if isnull(interp.parent)
         return
