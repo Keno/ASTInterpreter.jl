@@ -223,6 +223,10 @@ function print_sourcecode(interp, highlight = nothing)
     code = split(interp.code[(startoffset:stopoffset)+1],'\n')
     lineno = startline
 
+    if !isempty(code) && isempty(code[end])
+        pop!(code)
+    end
+
     for textline in code
         print_with_color(lineno == current_line ? :yellow : :white,
             string(lineno, " "^(stoplinelength-length(lineno)+1)))
