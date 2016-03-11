@@ -73,12 +73,15 @@ function make_shadowtree(tree)
             return parent_ev
         end
         unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) ||
-            isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode)
+            isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
             node.head == :inbounds)
             unevaluated = false
         end
         if (isa(node, GenSym) || isa(node, Symbol)) && isexpr(parent,:(=)) && parent.args[1] == node
+            unevaluated = false
+        end
+        if isexpr(parent, :static_typeof)
             unevaluated = false
         end
         !unevaluated
@@ -501,6 +504,10 @@ function _step_expr(interp)
             else
                 ret = f(node.args[2:end]...)
             end
+        elseif node.head == :static_typeof
+            ret = Any
+        elseif node.head == :type_goto
+            ret = nothing
         else
             ret = eval(node)
         end
