@@ -597,6 +597,8 @@ function to_function(x)
         x
     elseif isa(x, TopNode)
         Base.(x.name)
+    elseif isa(x, GlobalRef)
+        eval(x)
     else
         x
     end
@@ -904,8 +906,11 @@ function RunDebugREPL(interp)
         end
         if startswith(command, "`")
             body = parse(command[2:end])
-            f = Expr(:->,Expr(:tuple,keys(interp.env.locals)...,keys(interp.env.sparams)...),
-                body)
+            selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
+            unusedsym = symbol("#unused#")
+            lnames = Any[keys(interp.env.locals)...,keys(interp.env.sparams)...]
+            map!(x->(x===selfsym ? unusedsym : x), lnames)
+            f = Expr(:->,Expr(:tuple,lnames...), body)
             lam = interp.meth.func.module.eval(f)
             einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],interp.env,interp)
             try
