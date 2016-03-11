@@ -257,7 +257,7 @@ function print_status(interp, highlight = nothing; fancy = fancy_mode)
         print_sourcecode(interp, highlight)
         println("About to run: ", interp.shadowtree[highlight].tree.x)
     elseif interp.loctree === nothing
-            print_shadowtree(interp.shadowtree, highlight)
+        print_shadowtree(interp.shadowtree, highlight)
     else
         union = Lexer.normalize(reduce(⤄,PostOrderDFS(interp.loctree)))
         file = SourceFile(interp.code)
@@ -881,7 +881,7 @@ function print_backtrace(interp::Interpreter)
         println(interp.meth)
     end
     for (name,var) in interp.env.locals
-        println("- ",name,"::",typeof(var)," = ",var)
+        println("  | ",name,"::",typeof(var)," = ",var)
     end
     if isnull(interp.parent)
         return
