@@ -901,11 +901,13 @@ function RunDebugREPL(interp)
     function done_stepping(s, interp)
         if isnull(interp.parent) || get(interp.parent) == nothing
             LineEdit.transition(s, :abort)
+            interp = nothing
         else
             oldinterp = interp
             interp = get(oldinterp.parent)
             evaluated!(interp, oldinterp.retval)
         end
+        interp
     end
 
     panel.on_done = (s,buf,ok)->begin
@@ -955,7 +957,12 @@ function RunDebugREPL(interp)
             command = "se"
         elseif command == "finish"
             finish!(interp)
-            done_stepping(s, interp)
+            interp = done_stepping(s, interp)
+            if interp !== nothing
+                next_call!(interp)
+                print_status(interp, interp.next_expr[1])
+                println()
+            end
             return true
         end
         if command == "bt"
@@ -980,12 +987,14 @@ function RunDebugREPL(interp)
            command == "n" ? !next_line!(interp) :
            command == "se" ? !step_expr(interp) :
             (print_with_color(:red,"\nUnknown command!\n"); false)
-            done_stepping(s, interp)
+            interp = done_stepping(s, interp)
+            if interp !== nothing
+                (command == "n") && next_call!(interp)
+                print_status(interp, interp.next_expr[1])
+                println()
+            end
             return true
         end
-        curind = interp.next_expr[1][1]
-        range = max(1,curind-2):curind+3
-        #print_shadowtree(interp.shadowtree, interp.next_expr[1], range)
         print_status(interp, interp.next_expr[1])
         println()
         return true
