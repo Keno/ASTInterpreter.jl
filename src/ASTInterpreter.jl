@@ -543,17 +543,16 @@ function next_statement!(interp)
     return false
 end
 
-function next_call!(interp)
+function next_until!(f,interp)
     ind, node = interp.next_expr
     move_past = ind[1]
     while step_expr(interp)
         ind, node = interp.next_expr
-        if isa(node, Expr) && node.head == :call
-            return true
-        end
+        f(node) && return true
     end
     return false
 end
+next_call!(interp) = next_until!(node->isexpr(node,:call), interp)
 
 function changed_line(expr, line)
     if isa(expr, LineNumberNode)
@@ -590,7 +589,9 @@ function next_line!(interp)
     end
     done!(interp)
     # Ok, we stepped to the next line. Now step through to the next call
-    next_call!(interp)
+    call_or_assignment(node) = isexpr(node,:call) || isexpr(node,:(=))
+    call_or_assignment(interp.next_expr[2]) ||
+        next_until!(call_or_assignment, interp)
 end
 
 function _evaluated!(interp, ret)
