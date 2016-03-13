@@ -943,6 +943,10 @@ function RunDebugREPL(interp)
         else
             oldinterp = interp
             interp = get(oldinterp.parent)
+            if !isa(interp, Interpreter)
+                LineEdit.transition(s, :abort)
+                return nothing
+            end
             evaluated!(interp, oldinterp.retval)
             to_next_call && next_call!(interp)
             print_status(interp, interp.next_expr[1])
