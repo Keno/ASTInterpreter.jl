@@ -212,7 +212,7 @@ function print_sourcecode(interp, highlight = nothing)
 
     file = SourceFile(interp.code)
     startoffset, stopoffset = compute_source_offsets(interp, file.offsets[line],
-        interp.meth.func.line, line+3)
+        interp.meth.func.line-1, line+3)
 
     # Compute necessary data for line numbering
     startline = compute_line(file, startoffset)
@@ -818,6 +818,30 @@ function reparse_meth(meth)
     loctree, contents
 end
 
+function prepare_locals(linfo, argvals = ())
+    # Construct the environment from the arguments
+    ast = Base.uncompressed_ast(linfo.def)
+    argnames = ast.args[1]
+    env = Dict{Symbol,Nullable{Any}}()
+    if argvals != () && length(argvals) < length(argnames) # Empty Vararg
+        env[vatuple_name(argnames[end])] = ()
+    end
+    for (i,k) in enumerate(argnames)
+        if isa(k, Expr) # Vararg tuple
+            k = vatuple_name(k)
+            env[k] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
+            break
+        end
+        env[k] = length(argvals) >= i ? argvals[i] : Nullable{Any}()
+    end
+    # add local variables initially undefined
+    vinfo = ast.args[2][1]
+    for i = (length(argnames)+1):length(vinfo)
+        env[vinfo[i][1]] = Nullable{Any}()
+    end
+    env
+end
+
 function enter_call_expr(interp, expr)
     f = to_function(expr.args[1])
     allargs = expr.args
@@ -841,26 +865,7 @@ function enter_call_expr(interp, expr)
         end
         argtypes = Tuple{_Typeof(f), argtypes.parameters...}
         args = allargs
-        # Construct the environment from the arguments
-        ast = Base.uncompressed_ast(method.func.def)
-        argnames = ast.args[1]
-        env = Dict{Symbol,Nullable{Any}}()
-        if length(args) < length(argnames) # Empty Vararg
-            env[vatuple_name(argnames[end])] = ()
-        end
-        for (i,(k,v)) in enumerate(zip(argnames, args))
-            if isa(k, Expr) # Vararg tuple
-                k = vatuple_name(k)
-                env[k] = tuple(args[i:end]...)
-                break
-            end
-            env[k] = v
-        end
-        # add local variables initially undefined
-        vinfo = ast.args[2][1]
-        for i = (length(argnames)+1):length(vinfo)
-            env[vinfo[i][1]] = Nullable{Any}()
-        end
+        env = prepare_locals(method.func, args)
         # Add static parameters to environment
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
                            argtypes, method.sig, method.tvars)::SimpleVector
@@ -889,13 +894,8 @@ function print_linfo_desc(io::IO, linfo)
     println(") at ",linfo.file,":",linfo.line)
 end
 
-function print_backtrace(interp::Interpreter)
-    if isa(interp.meth, LambdaInfo)
-        print_linfo_desc(STDOUT, interp.meth)
-    else
-        println(interp.meth)
-    end
-    for (name,val) in interp.env.locals
+function print_locals(io::IO, locals, undef_callback)
+    for (name,val) in locals
         visible = true
         sn = string(name)
         if startswith(sn, "#")
@@ -907,13 +907,24 @@ function print_backtrace(interp::Interpreter)
         if visible
             print("  | ")
             if isnull(val)
-                println(name, " is undefined")
+                print(io, name, " = ")
+                undef_callback(io,name)
             else
                 val = get(val)
-                println(name, "::", typeof(val), " = ", val)
+                println(io, name, "::", typeof(val), " = ", val)
             end
         end
     end
+end
+
+function print_backtrace(interp::Interpreter)
+    if isa(interp.meth, LambdaInfo)
+        print_linfo_desc(STDOUT, interp.meth)
+    else
+        println(interp.meth)
+    end
+    print_locals(STDOUT, interp.env.locals,
+        (io,name)->println(io, "<undefined>"))
     if isnull(interp.parent)
         return
     end
