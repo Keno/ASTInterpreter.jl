@@ -53,7 +53,7 @@ Environment() = Environment(Dict{Symbol,Nullable{Any}}(),Dict{Symbol,Any}())
 Environment(locals,sparams) = Environment(locals,sparams,Dict{Int,Any}())
 
 type Interpreter
-    parent::Nullable
+    stack::Vector{Any}
     env::Environment
     meth::Any
     ast::Any
@@ -91,12 +91,12 @@ function make_shadowtree(tree)
     shadowtree, it
 end
 
-function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree = nothing, code = "")
+function enter(meth, tree::Expr, env, stack = Any[]; loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
 
-    parent = isa(parent, Nullable) ? parent : Nullable{typeof(parent)}(parent)
-    interp = Interpreter(parent, env, meth, tree, it,
+    interp = Interpreter(stack, env, meth, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing)
+    push!(stack, interp)
     ind, node = next_expr!(interp)
 
     while interp.shadowtree.shadow[ind].val
@@ -105,12 +105,12 @@ function enter(meth, tree::Expr, env, parent = Nullable{Interpreter}(); loctree 
 
     interp
 end
-function enter(meth::Method, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
+function enter(meth::Method, env::Environment, stack = Any[]; kwargs...)
     ast = Base.uncompressed_ast(meth.func.def)
     tree = ast.args[3]
-    enter(meth, tree, env, parent; kwargs...)
+    enter(meth, tree, env, stack; kwargs...)
 end
-function enter(linfo::LambdaInfo, env::Environment, parent = Nullable{Interpreter}(); kwargs...)
+function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
         f = (linfo.module).(linfo.name)
         meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
@@ -118,7 +118,7 @@ function enter(linfo::LambdaInfo, env::Environment, parent = Nullable{Interprete
     end
     ast = Base.uncompressed_ast(linfo)
     tree = ast.args[3]
-    enter(linfo, tree, env, parent; kwargs...)
+    enter(linfo, tree, env, stack; kwargs...)
 end
 enter(f::Function, env) = enter(first(methods(f)), env)
 
@@ -874,7 +874,7 @@ function enter_call_expr(interp, expr)
             sparams[method.func.sparam_syms[i]] = lenv[i]
         end
         loctree, code = reparse_meth(method)
-        newinterp = enter(method,Environment(env,sparams),interp, loctree = loctree, code = code)
+        newinterp = enter(method,Environment(env,sparams),interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
         return newinterp
     end
     nothing
@@ -917,35 +917,53 @@ function print_locals(io::IO, locals, undef_callback)
     end
 end
 
-function print_backtrace(interp::Interpreter)
+function print_backtrace(interp)
+    num = 1
+    for frame in interp.stack
+        print_frame(STDOUT, num, frame)
+        num += 1
+    end
+end
+
+function print_frame(io::IO, num, interp::Interpreter)
+    print(io, "[$num] ")
     if isa(interp.meth, LambdaInfo)
-        print_linfo_desc(STDOUT, interp.meth)
+        print_linfo_desc(io, interp.meth)
     else
-        println(interp.meth)
+        println(io, interp.meth)
     end
-    print_locals(STDOUT, interp.env.locals,
+    print_locals(io, interp.env.locals,
         (io,name)->println(io, "<undefined>"))
-    if isnull(interp.parent)
-        return
-    end
-    print_backtrace(get(interp.parent))
 end
 print_backtrace(_::Void) = nothing
 
 include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
 
-function RunDebugREPL(interp)
-    prompt = "debug > "
+function RunDebugREPL(top_interp)
+    level = 1
+    prompt(level, name) = "$level|$name > "
 
     repl = Base.active_repl
 
     # Setup debug panel
-    panel = LineEdit.Prompt(prompt;
+    panel = LineEdit.Prompt(prompt(level, "debug");
         prompt_prefix="\e[38;5;166m",
         prompt_suffix=Base.text_colors[:white],
         on_enter = s->true)
 
-    panel.hist = REPL.REPLHistoryProvider(Dict{Symbol,Any}(:debug => panel))
+    # For now use the regular REPL completion provider
+    replc = Base.REPL.REPLCompletionProvider(repl)
+
+    # Set up the main Julia prompt
+    julia_prompt = LineEdit.Prompt(prompt(level, "julia");
+        # Copy colors from the prompt object
+        prompt_prefix = repl.prompt_color,
+        prompt_suffix = (repl.envcolors ? Base.input_color : repl.input_color),
+        complete = replc,
+        on_enter = Base.REPL.return_callback)
+
+    panel.hist = REPL.REPLHistoryProvider(Dict{Symbol,Any}(:debug => panel,
+        :julia => julia_prompt))
 
     function done_stepping(s, interp; to_next_call = false)
         if isnull(interp.parent) || get(interp.parent) == nothing
@@ -966,6 +984,8 @@ function RunDebugREPL(interp)
         interp
     end
 
+    interp = top_interp
+
     panel.on_done = (s,buf,ok)->begin
         line = takebuf_string(buf)
         if !ok || strip(line) == "q"
@@ -975,24 +995,6 @@ function RunDebugREPL(interp)
             command = panel.hist.history[end]
         else
             command = strip(line)
-        end
-        if startswith(command, "`")
-            body = parse(command[2:end])
-            selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
-            unusedsym = symbol("#unused#")
-            lnames = Any[keys(interp.env.locals)...,keys(interp.env.sparams)...]
-            map!(x->(x===selfsym ? unusedsym : x), lnames)
-            f = Expr(:->,Expr(:tuple,lnames...), body)
-            lam = interp.meth.func.module.eval(f)
-            einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],interp.env,interp)
-            try
-                show(finish!(einterp))
-                println(); println()
-            catch err
-                REPL.display_error(STDERR, err, Base.catch_backtrace())
-                REPL.println(STDERR); REPL.println(STDERR)
-            end
-            return true
         end
         if command == "si" || command == "s"
             while true
@@ -1009,14 +1011,14 @@ function RunDebugREPL(interp)
                 end
                 command == "si" && break
                 if !step_expr(interp)
-                    interp = done_stepping(s, interp; to_next_call = true)
+                    top_interp = done_stepping(s, interp; to_next_call = true)
                     return true
                 end
             end
             command = "se"
         elseif command == "finish"
             finish!(interp)
-            interp = done_stepping(s, interp; to_next_call = true)
+            top_interp = done_stepping(s, interp; to_next_call = true)
             return true
         end
         if command == "bt"
@@ -1036,21 +1038,68 @@ function RunDebugREPL(interp)
                 Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
                 ))
             return true
+        elseif command == "up"
+            level += 1
+            interp = interp.stack[length(interp.stack)-(level-1)]
+            panel.prompt = prompt(level,"debug")
+            julia_prompt.prompt = prompt(level,"julia")
+        elseif command == "down"
+            level -= 1
+            interp = interp.stack[length(interp.stack)-(level-1)]
+            panel.prompt = prompt(level,"debug")
+            julia_prompt.prompt = prompt(level,"julia")
         elseif command == "ns" ? !next_statement!(interp) :
            command == "nc" ? !next_call!(interp) :
            command == "n" ? !next_line!(interp) :
            command == "se" ? !step_expr(interp) :
             (print_with_color(:red,"\nUnknown command!\n"); false)
-            interp = done_stepping(s, interp; to_next_call = command == "n")
+            top_interp = done_stepping(s, interp; to_next_call = command == "n")
             return true
         end
         print_status(interp, interp.next_expr[1])
         println()
         return true
     end
+    
+    julia_prompt.on_done = (s,buf,ok)->begin
+        command = strip(takebuf_string(copy(buf)))
+        body = parse(command)
+        selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
+        unusedsym = symbol("#unused#")
+        lnames = Any[keys(interp.env.locals)...,keys(interp.env.sparams)...]
+        map!(x->(x===selfsym ? unusedsym : x), lnames)
+        f = Expr(:->,Expr(:tuple,lnames...), body)
+        lam = interp.meth.func.module.eval(f)
+        # New interpreter is on detached stack
+        einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],interp.env,Any[])
+        try
+            show(finish!(einterp))
+            println(); println()
+        catch err
+            REPL.display_error(STDERR, err, Base.catch_backtrace())
+            REPL.println(STDERR); REPL.println(STDERR)
+            # Convenience hack. We'll see if this is more useful or annoying
+            LineEdit.transition(s, panel)
+            LineEdit.state(s, panel).input_buffer = buf
+        end
+    end
+    
+    const repl_switch = Dict{Any,Any}(
+        '`' => function (s,args...)
+            if isempty(s) || position(LineEdit.buffer(s)) == 0
+                buf = copy(LineEdit.buffer(s))
+                LineEdit.transition(s, julia_prompt) do
+                    LineEdit.state(s, julia_prompt).input_buffer = buf
+                end
+            else
+                LineEdit.edit_insert(s,key)
+            end
+        end
+    )
 
     b = Dict{Any,Any}[LineEdit.default_keymap, LineEdit.escape_defaults]
-    panel.keymap_dict = LineEdit.keymap(b)
+    panel.keymap_dict = LineEdit.keymap([repl_switch;b])
+    julia_prompt.keymap_dict = LineEdit.keymap([Base.REPL.mode_keymap(panel);b])
 
     # Skip evaluated values (e.g. constants)
     ind = interp.next_expr[1][1]
