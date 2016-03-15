@@ -207,12 +207,9 @@ function determine_line(interp, highlight)
     line
 end
 
-function print_sourcecode(interp, highlight = nothing)
-    line = determine_line(interp, highlight)
-
-    file = SourceFile(interp.code)
-    startoffset, stopoffset = compute_source_offsets(interp, file.offsets[line],
-        interp.meth.func.line-1, line+3)
+function print_sourcecode(linfo, code, line; file = SourceFile(code))
+    startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
+        linfo.line-1, line+3; file=file)
 
     # Compute necessary data for line numbering
     startline = compute_line(file, startoffset)
@@ -220,7 +217,7 @@ function print_sourcecode(interp, highlight = nothing)
     current_line = line
     stoplinelength = length(string(stopline))
 
-    code = split(interp.code[(startoffset:stopoffset)+1],'\n')
+    code = split(code[(startoffset:stopoffset)+1],'\n')
     lineno = startline
 
     if !isempty(code) && isempty(code[end])
@@ -241,10 +238,10 @@ Determine the offsets in the source code to print, based on the offset of the
 currently highlighted part of the code, and the start and stop line of the
 entire function.
 """
-function compute_source_offsets(interp, offset, startline, stopline; file = SourceFile(interp.code))
+function compute_source_offsets(code, offset, startline, stopline; file = SourceFile(interp.code))
     offsetline = compute_line(file, offset)
     startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])
-    stopoffset = endof(interp.code)-1
+    stopoffset = endof(code)-1
     if offsetline + 3 < endof(file.offsets)
         stopoffset = min(stopoffset, file.offsets[offsetline + 3]-1)
     end
@@ -258,7 +255,7 @@ global fancy_mode = false
 
 function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
-        print_sourcecode(interp, highlight)
+        print_sourcecode(interp.meth.func, interp.code, determine_line(interp, highlight))
         println("About to run: ", interp.shadowtree[highlight].tree.x)
     elseif interp.loctree === nothing
         print_shadowtree(interp.shadowtree, highlight)
@@ -1069,7 +1066,7 @@ function RunDebugREPL(top_interp)
     end
 
     julia_prompt.on_done = (s,buf,ok)->begin
-        if !ok || strip(line) == "q"
+        if !ok
             LineEdit.transition(s, :abort)
         end
         xbuf = copy(buf)
