@@ -942,6 +942,10 @@ include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveut
 get_env_for_eval(interp::Interpreter) = interp.env
 get_linfo(interp::Interpreter) = interp.linfo
 
+function unknown_command(interp::Interpreter, command)
+    print_with_color(:red,"\nUnknown command!\n");
+end
+
 function RunDebugREPL(top_interp)
     level = 1
     prompt(level, name) = "$level|$name > "
@@ -1043,19 +1047,19 @@ function RunDebugREPL(top_interp)
             return true
         elseif command == "up"
             level += 1
-            interp = interp.stack[length(top_interp.stack)-(level-1)]
+            interp = top_interp.stack[length(top_interp.stack)-(level-1)]
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
         elseif command == "down"
             level -= 1
-            interp = interp.stack[length(top_interp.stack)-(level-1)]
+            interp = top_interp.stack[length(top_interp.stack)-(level-1)]
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
         elseif command == "ns" ? !next_statement!(interp) :
            command == "nc" ? !next_call!(interp) :
            command == "n" ? !next_line!(interp) :
            command == "se" ? !step_expr(interp) :
-            (print_with_color(:red,"\nUnknown command!\n"); false)
+            (unknown_command(interp, command); false)
             top_interp = done_stepping(s, interp; to_next_call = command == "n")
             return true
         end
@@ -1063,9 +1067,10 @@ function RunDebugREPL(top_interp)
         println()
         return true
     end
-    
+
     julia_prompt.on_done = (s,buf,ok)->begin
-        command = strip(takebuf_string(copy(buf)))
+        xbuf = copy(buf)
+        command = strip(takebuf_string(buf))
         body = parse(command)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
@@ -1084,10 +1089,10 @@ function RunDebugREPL(top_interp)
             REPL.println(STDERR); REPL.println(STDERR)
             # Convenience hack. We'll see if this is more useful or annoying
             LineEdit.transition(s, panel)
-            LineEdit.state(s, panel).input_buffer = buf
+            LineEdit.state(s, panel).input_buffer = xbuf
         end
     end
-    
+
     const repl_switch = Dict{Any,Any}(
         '`' => function (s,args...)
             if isempty(s) || position(LineEdit.buffer(s)) == 0
