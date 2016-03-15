@@ -937,7 +937,7 @@ print_backtrace(_::Void) = nothing
 include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
 
 get_env_for_eval(interp::Interpreter) = interp.env
-get_linfo(interp::Interpreter) = interp.linfo
+get_linfo(interp::Interpreter) = interp.meth.func
 
 function unknown_command(interp::Interpreter, command)
     print_with_color(:red,"\nUnknown command!\n");
