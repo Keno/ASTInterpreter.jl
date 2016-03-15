@@ -114,7 +114,7 @@ function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
         f = (linfo.module).(linfo.name)
         meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
-        return enter(meth, env, parent; kwargs...)
+        return enter(meth, env, stack; kwargs...)
     end
     ast = Base.uncompressed_ast(linfo)
     tree = ast.args[3]
@@ -256,7 +256,7 @@ end
 
 global fancy_mode = false
 
-function print_status(interp, highlight = nothing; fancy = fancy_mode)
+function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
         print_sourcecode(interp, highlight)
         println("About to run: ", interp.shadowtree[highlight].tree.x)
@@ -919,7 +919,7 @@ end
 
 function print_backtrace(interp)
     num = 1
-    for frame in interp.stack
+    for frame in reverse(interp.stack)
         print_frame(STDOUT, num, frame)
         num += 1
     end
@@ -938,6 +938,9 @@ end
 print_backtrace(_::Void) = nothing
 
 include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
+
+get_env_for_eval(interp::Interpreter) = interp.env
+get_linfo(interp::Interpreter) = interp.linfo
 
 function RunDebugREPL(top_interp)
     level = 1
@@ -1022,7 +1025,7 @@ function RunDebugREPL(top_interp)
             return true
         end
         if command == "bt"
-            print_backtrace(interp)
+            print_backtrace(top_interp)
             println()
             return true
         elseif command == "shadow"
@@ -1040,12 +1043,12 @@ function RunDebugREPL(top_interp)
             return true
         elseif command == "up"
             level += 1
-            interp = interp.stack[length(interp.stack)-(level-1)]
+            interp = interp.stack[length(top_interp.stack)-(level-1)]
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
         elseif command == "down"
             level -= 1
-            interp = interp.stack[length(interp.stack)-(level-1)]
+            interp = interp.stack[length(top_interp.stack)-(level-1)]
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
         elseif command == "ns" ? !next_statement!(interp) :
@@ -1056,7 +1059,7 @@ function RunDebugREPL(top_interp)
             top_interp = done_stepping(s, interp; to_next_call = command == "n")
             return true
         end
-        print_status(interp, interp.next_expr[1])
+        print_status(interp)
         println()
         return true
     end
@@ -1066,12 +1069,13 @@ function RunDebugREPL(top_interp)
         body = parse(command)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
-        lnames = Any[keys(interp.env.locals)...,keys(interp.env.sparams)...]
+        env = get_env_for_eval(interp)
+        lnames = Any[keys(env.locals)...,keys(env.sparams)...]
         map!(x->(x===selfsym ? unusedsym : x), lnames)
         f = Expr(:->,Expr(:tuple,lnames...), body)
-        lam = interp.meth.func.module.eval(f)
+        lam = get_linfo(interp).module.eval(f)
         # New interpreter is on detached stack
-        einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],interp.env,Any[])
+        einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],env,Any[])
         try
             show(finish!(einterp))
             println(); println()
