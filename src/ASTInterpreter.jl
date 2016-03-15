@@ -1069,6 +1069,9 @@ function RunDebugREPL(top_interp)
     end
 
     julia_prompt.on_done = (s,buf,ok)->begin
+        if !ok || strip(line) == "q"
+            LineEdit.transition(s, :abort)
+        end
         xbuf = copy(buf)
         command = strip(takebuf_string(buf))
         body = parse(command)
