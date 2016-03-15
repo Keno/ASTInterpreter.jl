@@ -46,11 +46,10 @@ end
 
 immutable Environment
     locals::Dict{Symbol, Nullable{Any}}
-    sparams::Dict{Symbol, Any}
     gensyms::Dict{Int, Any}
 end
 Environment() = Environment(Dict{Symbol,Nullable{Any}}(),Dict{Symbol,Any}())
-Environment(locals,sparams) = Environment(locals,sparams,Dict{Int,Any}())
+Environment(locals) = Environment(locals,Dict{Int,Any}())
 
 type Interpreter
     stack::Vector{Any}
@@ -476,8 +475,6 @@ function _step_expr(interp)
                 error("local variable $node not defined")
             end
             ret = get(val)
-        elseif haskey(interp.env.sparams, node)
-            ret = interp.env.sparams[node]
         else
             ret = eval(node)
         end
@@ -866,12 +863,11 @@ function enter_call_expr(interp, expr)
         # Add static parameters to environment
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
                            argtypes, method.sig, method.tvars)::SimpleVector
-        sparams = Dict{Symbol, Any}()
         for i = 1:length(lenv)
-            sparams[method.func.sparam_syms[i]] = lenv[i]
+            env[method.func.sparam_syms[i]] = lenv[i]
         end
         loctree, code = reparse_meth(method)
-        newinterp = enter(method,Environment(env,sparams),interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
+        newinterp = enter(method,Environment(env),interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
         return newinterp
     end
     nothing
@@ -1075,7 +1071,7 @@ function RunDebugREPL(top_interp)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
         env = get_env_for_eval(interp)
-        lnames = Any[keys(env.locals)...,keys(env.sparams)...]
+        lnames = Any[keys(env.locals)...]
         map!(x->(x===selfsym ? unusedsym : x), lnames)
         f = Expr(:->,Expr(:tuple,lnames...), body)
         lam = get_linfo(interp).module.eval(f)
