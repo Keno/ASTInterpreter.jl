@@ -460,7 +460,6 @@ function _step_expr(interp)
 
     if isa(node, Expr) && node.head == :return
         interp.retval = node.args[1]
-        println("Returning $(node.args[1])")
         return false
     end
     if isa(node, Symbol) || isa(node,GenSym)
@@ -539,14 +538,13 @@ end
 
 function next_until!(f,interp)
     ind, node = interp.next_expr
-    move_past = ind[1]
     while step_expr(interp)
         ind, node = interp.next_expr
         f(node) && return true
     end
     return false
 end
-next_call!(interp) = next_until!(node->isexpr(node,:call), interp)
+next_call!(interp) = next_until!(node->isexpr(node,:call)||isexpr(node,:return), interp)
 
 function changed_line(expr, line)
     if isa(expr, LineNumberNode)
@@ -966,18 +964,22 @@ function RunDebugREPL(top_interp)
         :julia => julia_prompt))
 
     function done_stepping(s, interp; to_next_call = false)
-        if isnull(interp.parent) || get(interp.parent) == nothing
+        stack = interp.stack
+        this_idx = findfirst(stack, interp)
+        if this_idx == 0
             LineEdit.transition(s, :abort)
             interp = nothing
         else
             oldinterp = interp
-            interp = get(oldinterp.parent)
+            interp = stack[this_idx-1]
+            resize!(stack, this_idx-1)
             if !isa(interp, Interpreter)
                 LineEdit.transition(s, :abort)
                 return nothing
             end
             evaluated!(interp, oldinterp.retval)
-            to_next_call && next_call!(interp)
+            to_next_call &&
+              (isexpr(interp.next_expr[2], :call) || next_call!(interp))
             print_status(interp, interp.next_expr[1])
             println()
         end
@@ -1003,7 +1005,7 @@ function RunDebugREPL(top_interp)
                     if expr.head == :call && !isa(expr.args[1],IntrinsicFunction)
                         x = enter_call_expr(interp, expr)
                         if x !== nothing
-                            interp = x
+                            interp = top_interp = x
                             print_status(interp, interp.next_expr[1])
                             return true
                         end
@@ -1011,14 +1013,14 @@ function RunDebugREPL(top_interp)
                 end
                 command == "si" && break
                 if !step_expr(interp)
-                    top_interp = done_stepping(s, interp; to_next_call = true)
+                    interp = top_interp = done_stepping(s, interp; to_next_call = true)
                     return true
                 end
             end
             command = "se"
         elseif command == "finish"
             finish!(interp)
-            top_interp = done_stepping(s, interp; to_next_call = true)
+            interp = top_interp = done_stepping(s, interp; to_next_call = true)
             return true
         end
         if command == "bt"
