@@ -1031,6 +1031,10 @@ function RunDebugREPL(top_interp)
             print_shadowtree(interp.shadowtree, interp.next_expr[1])
             println()
             return true
+        elseif command == "linfo"
+            eval(Main,:(linfo = $(get_linfo(interp))))
+            LineEdit.transition(s, :abort)
+            return true
         elseif command == "ind"
             println("About to execute index", interp.next_expr[1])
             return true
