@@ -1174,13 +1174,8 @@ function RunDebugREPL(top_interp)
     julia_prompt.keymap_dict = LineEdit.keymap([Base.REPL.mode_keymap(panel);b])
 
     # Skip evaluated values (e.g. constants)
-    ind = interp.next_expr[1][1]
-    while interp.shadowtree.shadow[ind].val
-        ind, node = next_expr!(interp)
-    end
-
-    #print_shadowtree(interp.shadowtree, interp.next_expr[1])
-    print_status(interp, interp.next_expr[1])
+    done!(interp)
+    print_status(interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
