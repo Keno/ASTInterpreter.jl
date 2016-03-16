@@ -1176,7 +1176,6 @@ function RunDebugREPL(top_interp)
 
     #print_shadowtree(interp.shadowtree, interp.next_expr[1])
     print_status(interp, interp.next_expr[1])
-    @show (panel,julia_prompt,search_prompt)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
