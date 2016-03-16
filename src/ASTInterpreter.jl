@@ -561,6 +561,7 @@ isgotonode(node) = isa(node, GotoNode) || isexpr(node, :gotoifnot)
 function next_line!(interp)
     didchangeline = false
     line = determine_line(interp, interp.next_expr[1])
+    first = true
     while !didchangeline
         ind, node = interp.next_expr
         # Skip evaluated values (e.g. constants)
@@ -571,6 +572,10 @@ function next_line!(interp)
         end
         didchangeline && break
         ind, node = interp.next_expr
+        # If this is a return node, interrupt execution. This is the same
+        # special case as in `s`.
+        (!first && isexpr(node, :return)) && return true
+        first = false
         # If this is a goto node, step it and reevaluate
         if isgotonode(node)
             _step_expr(interp) || return false
@@ -581,7 +586,7 @@ function next_line!(interp)
     end
     done!(interp)
     # Ok, we stepped to the next line. Now step through to the next call
-    call_or_assignment(node) = isexpr(node,:call) || isexpr(node,:(=))
+    call_or_assignment(node) = isexpr(node,:call) || isexpr(node,:(=)) || isexpr(node, :return)
     call_or_assignment(interp.next_expr[2]) ||
         next_until!(call_or_assignment, interp)
 end
@@ -1136,6 +1141,7 @@ function RunDebugREPL(top_interp)
         try
             show(finish!(einterp))
             println(); println()
+            LineEdit.reset_state(s)
         catch err
             REPL.display_error(STDERR, err, Base.catch_backtrace())
             REPL.println(STDERR); REPL.println(STDERR)
@@ -1147,7 +1153,6 @@ function RunDebugREPL(top_interp)
                 break
             end
         end
-        LineEdit.reset_state(s)
         return true
     end
 
