@@ -824,7 +824,7 @@ function prepare_locals(linfo, argvals = ())
             env[k] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
             break
         end
-        env[k] = length(argvals) >= i ? argvals[i] : Nullable{Any}()
+        env[k] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
     end
     # add local variables initially undefined
     vinfo = ast.args[2][1]
