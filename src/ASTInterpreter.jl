@@ -975,6 +975,12 @@ function RunDebugREPL(top_interp)
 
     panel.hist = REPL.REPLHistoryProvider(Dict{Symbol,Any}(:debug => panel,
         :julia => julia_prompt))
+    julia_prompt.hist = panel.hist
+    Base.REPL.history_reset_state(panel.hist)
+
+    search_prompt, skeymap = Base.LineEdit.setup_search_keymap(panel.hist)
+    search_prompt.complete = Base.REPL.LatexCompletions()
+
 
     function done_stepping(s, interp; to_next_call = false)
         stack = interp.stack
@@ -1006,6 +1012,8 @@ function RunDebugREPL(top_interp)
         old_level = level
         if !ok || strip(line) == "q"
             LineEdit.transition(s, :abort)
+            LineEdit.reset_state(s)
+            return false
         end
         if isempty(strip(line)) && length(panel.hist.history) > 0
             command = panel.hist.history[end]
@@ -1022,6 +1030,7 @@ function RunDebugREPL(top_interp)
                         if x !== nothing
                             interp = top_interp = x
                             print_status(interp, interp.next_expr[1])
+                            LineEdit.reset_state(s)
                             return true
                         end
                     elseif !first && isexpr(expr, :return)
@@ -1029,6 +1038,7 @@ function RunDebugREPL(top_interp)
                         # statement, unless the user was already there when they
                         # hit `s`
                         print_status(interp, interp.next_expr[1])
+                        LineEdit.reset_state(s)
                         return true
                     end
                 end
@@ -1036,6 +1046,7 @@ function RunDebugREPL(top_interp)
                 command == "si" && break
                 if !step_expr(interp)
                     interp = top_interp = done_stepping(s, interp; to_next_call = true)
+                    LineEdit.reset_state(s)
                     return true
                 end
             end
@@ -1043,28 +1054,34 @@ function RunDebugREPL(top_interp)
         elseif command == "finish"
             finish!(interp)
             interp = top_interp = done_stepping(s, interp; to_next_call = true)
+            LineEdit.reset_state(s)
             return true
         end
         if command == "bt"
             print_backtrace(top_interp)
             println()
+            LineEdit.reset_state(s)
             return true
         elseif command == "shadow"
             print_shadowtree(interp.shadowtree, interp.next_expr[1])
             println()
+            LineEdit.reset_state(s)
             return true
         elseif command == "linfo"
             eval(Main,:(linfo = $(get_linfo(interp))))
             LineEdit.transition(s, :abort)
+            LineEdit.reset_state(s)
             return true
         elseif command == "ind"
             println("About to execute index", interp.next_expr[1])
+            LineEdit.reset_state(s)
             return true
         elseif command == "loc"
             w = create_widget(interp.loctree,interp.code)
             TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
                 Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
                 ))
+            LineEdit.reset_state(s)
             return true
         elseif command == "up"
             level += 1
@@ -1080,6 +1097,7 @@ function RunDebugREPL(top_interp)
                command == "n" ? !next_line!(interp) :
                 !step_expr(interp) #= command == "se" =#
                 top_interp = done_stepping(s, interp; to_next_call = command == "n")
+                LineEdit.reset_state(s)
                 return true
             end
         else
@@ -1089,6 +1107,7 @@ function RunDebugREPL(top_interp)
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
         end
+        LineEdit.reset_state(s)
         print_status(interp)
         println()
         return true
@@ -1100,6 +1119,7 @@ function RunDebugREPL(top_interp)
     julia_prompt.on_done = (s,buf,ok)->begin
         if !ok
             LineEdit.transition(s, :abort)
+            return false
         end
         xbuf = copy(buf)
         command = strip(takebuf_string(buf))
@@ -1127,6 +1147,8 @@ function RunDebugREPL(top_interp)
                 break
             end
         end
+        LineEdit.reset_state(s)
+        return true
     end
 
     const repl_switch = Dict{Any,Any}(
@@ -1142,7 +1164,7 @@ function RunDebugREPL(top_interp)
         end
     )
 
-    b = Dict{Any,Any}[LineEdit.default_keymap, LineEdit.escape_defaults]
+    b = Dict{Any,Any}[skeymap, LineEdit.history_keymap, LineEdit.default_keymap, LineEdit.escape_defaults]
     panel.keymap_dict = LineEdit.keymap([repl_switch;b])
     julia_prompt.keymap_dict = LineEdit.keymap([Base.REPL.mode_keymap(panel);b])
 
@@ -1154,7 +1176,8 @@ function RunDebugREPL(top_interp)
 
     #print_shadowtree(interp.shadowtree, interp.next_expr[1])
     print_status(interp, interp.next_expr[1])
-    Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel]))
+    @show (panel,julia_prompt,search_prompt)
+    Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
 """
