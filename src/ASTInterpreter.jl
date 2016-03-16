@@ -74,7 +74,7 @@ function make_shadowtree(tree)
         unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) ||
             isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
-            node.head == :inbounds)
+            node.head == :inbounds || node.head == :line)
             unevaluated = false
         end
         if (isa(node, GenSym) || isa(node, Symbol)) && isexpr(parent,:(=)) && parent.args[1] == node
@@ -937,6 +937,19 @@ function unknown_command(interp::Interpreter, command)
     print_with_color(:red,"\nUnknown command!\n");
 end
 
+function finish_until!(top_interp, interp)
+    while true
+        if top_interp == interp
+            return interp
+        end
+        finish!(top_interp)
+        oldinterp = pop!(top_interp.stack)
+        top_interp = oldinterp.stack[end]
+        evaluated!(top_interp, oldinterp.retval)
+    end
+    interp
+end
+
 function RunDebugREPL(top_interp)
     level = 1
     prompt(level, name) = "$level|$name > "
@@ -971,7 +984,7 @@ function RunDebugREPL(top_interp)
             interp = nothing
         else
             oldinterp = interp
-            interp = stack[this_idx-1]
+            interp = this_idx == 1 ? nothing : stack[this_idx-1]
             resize!(stack, this_idx-1)
             if !isa(interp, Interpreter)
                 LineEdit.transition(s, :abort)
@@ -990,6 +1003,7 @@ function RunDebugREPL(top_interp)
 
     panel.on_done = (s,buf,ok)->begin
         line = takebuf_string(buf)
+        old_level = level
         if !ok || strip(line) == "q"
             LineEdit.transition(s, :abort)
         end
@@ -1047,25 +1061,33 @@ function RunDebugREPL(top_interp)
         elseif command == "up"
             level += 1
             interp = top_interp.stack[length(top_interp.stack)-(level-1)]
-            panel.prompt = prompt(level,"debug")
-            julia_prompt.prompt = prompt(level,"julia")
         elseif command == "down"
             level -= 1
             interp = top_interp.stack[length(top_interp.stack)-(level-1)]
+        elseif command in ("ns","nc","n","se")
+            (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
+            level = 1
+            if command == "ns" ? !next_statement!(interp) :
+               command == "nc" ? !next_call!(interp) :
+               command == "n" ? !next_line!(interp) :
+                !step_expr(interp) #= command == "se" =#
+                top_interp = done_stepping(s, interp; to_next_call = command == "n")
+                return true
+            end
+        else
+            unknown_command(interp, command)
+        end
+        if old_level != level
             panel.prompt = prompt(level,"debug")
             julia_prompt.prompt = prompt(level,"julia")
-        elseif command == "ns" ? !next_statement!(interp) :
-           command == "nc" ? !next_call!(interp) :
-           command == "n" ? !next_line!(interp) :
-           command == "se" ? !step_expr(interp) :
-            (unknown_command(interp, command); false)
-            top_interp = done_stepping(s, interp; to_next_call = command == "n")
-            return true
         end
         print_status(interp)
         println()
         return true
     end
+
+    const all_commands = ("q", "s", "si", "finish", "bt", "loc", "ind", "shadow",
+        "up", "down", "ns", "nc", "n", "se")
 
     julia_prompt.on_done = (s,buf,ok)->begin
         if !ok
@@ -1090,8 +1112,12 @@ function RunDebugREPL(top_interp)
             REPL.display_error(STDERR, err, Base.catch_backtrace())
             REPL.println(STDERR); REPL.println(STDERR)
             # Convenience hack. We'll see if this is more useful or annoying
-            LineEdit.transition(s, panel)
-            LineEdit.state(s, panel).input_buffer = xbuf
+            for c in all_commands
+                !startswith(command, c) && continue
+                LineEdit.transition(s, panel)
+                LineEdit.state(s, panel).input_buffer = xbuf
+                break
+            end
         end
     end
 
