@@ -1013,6 +1013,7 @@ function RunDebugREPL(top_interp)
             command = strip(line)
         end
         if command == "si" || command == "s"
+            first = true
             while true
                 expr = interp.next_expr[2]
                 if isa(expr, Expr)
@@ -1023,8 +1024,15 @@ function RunDebugREPL(top_interp)
                             print_status(interp, interp.next_expr[1])
                             return true
                         end
+                    elseif !first && isexpr(expr, :return)
+                        # As a special case, do not step through a return
+                        # statement, unless the user was already there when they
+                        # hit `s`
+                        print_status(interp, interp.next_expr[1])
+                        return true
                     end
                 end
+                first = false
                 command == "si" && break
                 if !step_expr(interp)
                     interp = top_interp = done_stepping(s, interp; to_next_call = true)
