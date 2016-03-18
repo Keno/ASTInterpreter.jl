@@ -500,11 +500,7 @@ function _step_expr(interp)
             # Don't go through eval since this may have unqouted, symbols and
             # exprs
             f = to_function(node.args[1])
-            if isa(f, IntrinsicFunction)
-                ret = eval(node)
-            else
-                ret = f(node.args[2:end]...)
-            end
+            ret = f(node.args[2:end]...)
         elseif node.head == :static_typeof
             ret = Any
         elseif node.head == :type_goto
