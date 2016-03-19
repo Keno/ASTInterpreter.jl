@@ -500,7 +500,11 @@ function _step_expr(interp)
             # Don't go through eval since this may have unqouted, symbols and
             # exprs
             f = to_function(node.args[1])
-            ret = f(node.args[2:end]...)
+            if isa(f, Core.IntrinsicFunction)
+                ret = eval(node)
+            else
+                ret = f(node.args[2:end]...)
+            end
         elseif node.head == :static_typeof
             ret = Any
         elseif node.head == :type_goto
@@ -846,7 +850,7 @@ function enter_call_expr(interp, expr)
             allargs = allargs[2:end]
         end
     end
-    if !isa(f, Builtin)
+    if !isa(f, Core.Builtin)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
         method = try
