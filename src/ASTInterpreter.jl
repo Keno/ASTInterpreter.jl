@@ -1089,11 +1089,21 @@ function RunDebugREPL(top_interp)
             LineEdit.reset_state(s)
             return true
         elseif command == "up"
+            new_stack_idx = length(top_interp.stack)-level
+            if new_stack_idx == 0
+                print_with_color(:red, STDERR, "Already at the top of the stack\n")
+                return true
+            end
             level += 1
-            interp = top_interp.stack[length(top_interp.stack)-(level-1)]
+            interp = top_interp.stack[new_stack_idx]
         elseif command == "down"
+            new_stack_idx = length(top_interp.stack)-(level-2)
+            if new_stack_idx > length(top_interp.stack)
+                print_with_color(:red, STDERR, "Already at the bottom of the stack\n")
+                return true
+            end
             level -= 1
-            interp = top_interp.stack[length(top_interp.stack)-(level-1)]
+            interp = top_interp.stack[new_stack_idx]
         elseif command in ("ns","nc","n","se")
             (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
             level = 1
