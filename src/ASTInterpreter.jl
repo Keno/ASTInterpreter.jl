@@ -610,7 +610,7 @@ function done!(interp)
 end
 
 function to_function(x)
-    if isa(x, Function) || isa(x, IntrinsicFunction)
+    if isa(x, Function) || isa(x, Core.IntrinsicFunction)
         x
     elseif isa(x, TopNode)
         Base.(x.name)
@@ -1030,7 +1030,7 @@ function RunDebugREPL(top_interp)
             while true
                 expr = interp.next_expr[2]
                 if isa(expr, Expr)
-                    if expr.head == :call && !isa(expr.args[1],IntrinsicFunction)
+                    if expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
                         x = enter_call_expr(interp, expr)
                         if x !== nothing
                             interp = top_interp = x
