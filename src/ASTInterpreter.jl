@@ -955,6 +955,9 @@ function finish_until!(top_interp, interp)
     interp
 end
 
+can_step(_) = false
+can_step(interp::Interpreter) = true
+
 function RunDebugREPL(top_interp)
     level = 1
     prompt(level, name) = "$level|$name > "
@@ -1105,6 +1108,10 @@ function RunDebugREPL(top_interp)
             level -= 1
             interp = top_interp.stack[new_stack_idx]
         elseif command in ("ns","nc","n","se")
+            if !can_step(interp)
+                print_with_color(:red, STDERR, "Can't step in this frame\n")
+                return true
+            end
             (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
             level = 1
             if command == "ns" ? !next_statement!(interp) :
