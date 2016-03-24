@@ -1118,7 +1118,7 @@ function RunDebugREPL(top_interp)
                command == "nc" ? !next_call!(interp) :
                command == "n" ? !next_line!(interp) :
                 !step_expr(interp) #= command == "se" =#
-                top_interp = done_stepping(s, interp; to_next_call = command == "n")
+                interp = top_interp = done_stepping(s, interp; to_next_call = command == "n")
                 LineEdit.reset_state(s)
                 return true
             end
