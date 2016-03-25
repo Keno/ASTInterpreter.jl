@@ -483,8 +483,10 @@ function _step_expr(interp)
             rhs = node.args[2]
             if isa(lhs, GenSym)
                 interp.env.gensyms[lhs.id] = rhs
+            elseif isa(lhs, GlobalRef)
+                eval(:($lhs = $(QuoteNode(rhs))))
             else
-                interp.env.locals[lhs] = rhs
+                interp.env.locals[lhs] = Nullable{Any}(rhs)
             end
             # Special case hack for readability.
             # ret = rhs
