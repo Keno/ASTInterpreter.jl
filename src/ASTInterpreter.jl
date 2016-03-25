@@ -51,7 +51,7 @@ Environment(locals) = Environment(locals,Dict{Int,Any}())
 type Interpreter
     stack::Vector{Any}
     env::Environment
-    meth::Any
+    linfo::LambdaInfo
     ast::Any
     it::Any
     cur_state::Any
@@ -69,7 +69,7 @@ function make_shadowtree(tree)
         if parent_ev
             return parent_ev
         end
-        unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) ||
+        unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) || isa(node,Slot) ||
             isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
             node.head == :inbounds || node.head == :line)
@@ -88,10 +88,10 @@ function make_shadowtree(tree)
     shadowtree, it
 end
 
-function enter(meth, tree::Expr, env, stack = Any[]; loctree = nothing, code = "")
+function enter(linfo, tree::Expr, env, stack = Any[]; loctree = nothing, code = "")
     shadowtree, it = make_shadowtree(tree)
 
-    interp = Interpreter(stack, env, meth, tree, it,
+    interp = Interpreter(stack, env, linfo, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}())
     push!(stack, interp)
     ind, node = next_expr!(interp)
@@ -103,9 +103,10 @@ function enter(meth, tree::Expr, env, stack = Any[]; loctree = nothing, code = "
     interp
 end
 function enter(meth::Method, env::Environment, stack = Any[]; kwargs...)
-    ast = Base.uncompressed_ast(meth.func.def)
-    tree = ast.args[3]
-    enter(meth, tree, env, stack; kwargs...)
+    linfo = meth.func
+    code = Base.uncompressed_ast(linfo.def)
+    tree = Expr(:body); tree.args = code
+    enter(linfo, tree, env, stack; kwargs...)
 end
 function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
@@ -113,8 +114,8 @@ function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
         meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
         return enter(meth, env, stack; kwargs...)
     end
-    ast = Base.uncompressed_ast(linfo)
-    tree = ast.args[3]
+    code = Base.uncompressed_ast(linfo)
+    tree = Expr(:body); tree.args = code
     enter(linfo, tree, env, stack; kwargs...)
 end
 enter(f::Function, env) = enter(first(methods(f)), env)
@@ -187,7 +188,7 @@ function annotate_highlights!(x, highlights)
 end
 
 function determine_line(interp, highlight)
-    line = interp.meth.func.line
+    line = interp.linfo.line
     # Find a line number node previous to this expression
     if highlight !== nothing
         exprtree = interp.shadowtree.tree.x
@@ -253,7 +254,7 @@ global fancy_mode = false
 
 function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
-        print_sourcecode(interp.meth.func, interp.code, determine_line(interp, highlight))
+        print_sourcecode(interp.linfo, interp.code, determine_line(interp, highlight))
         println("About to run: ", interp.shadowtree[highlight].tree.x)
     elseif interp.loctree === nothing
         print_shadowtree(interp.shadowtree, highlight)
@@ -464,20 +465,19 @@ function _step_expr(interp)
             interp.retval = node.args[1]
             return false
         end
-        if isa(node, Symbol) || isa(node,GenSym)
+        if isa(node, Slot) || isa(node,GenSym)
             # Check if we're the LHS of an assignment
             if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
                 ret = node
             elseif isa(node,GenSym)
                 ret = interp.env.gensyms[node.id]
-            elseif haskey(interp.env.locals, node)
-                val = interp.env.locals[node]
+            else
+                sym = interp.linfo.slotnames[node.id]
+                val = interp.env.locals[sym]
                 if isnull(val)
                     error("local variable $node not defined")
                 end
                 ret = get(val)
-            else
-                ret = eval(node)
             end
         elseif isa(node, Expr)
             if node.head == :(=)
@@ -485,10 +485,11 @@ function _step_expr(interp)
                 rhs = node.args[2]
                 if isa(lhs, GenSym)
                     interp.env.gensyms[lhs.id] = rhs
+                elseif isa(lhs, Slot)
+                    sym = interp.linfo.slotnames[lhs.id]
+                    interp.env.locals[sym] = Nullable{Any}(rhs)
                 elseif isa(lhs, GlobalRef)
                     eval(:($lhs = $(QuoteNode(rhs))))
-                else
-                    interp.env.locals[lhs] = Nullable{Any}(rhs)
                 end
                 # Special case hack for readability.
                 # ret = rhs
@@ -501,6 +502,8 @@ function _step_expr(interp)
                     return goto!(interp, node.args[2])
                 end
             elseif node.head == :call
+                # Don't go through eval since this may have unqouted, symbols and
+                # exprs
                 f = to_function(node.args[1])
                 if isa(f, Core.IntrinsicFunction)
                     # Special handling to quote any literal symbols that may still
@@ -528,6 +531,8 @@ function _step_expr(interp)
                     pop!(interp.exception_frames)
                 end
                 ret = node
+            elseif node.head == :static_parameter
+                ret = get(interp.env.locals[interp.linfo.sparam_syms[node.args[1]]])
             else
                 ret = eval(node)
             end
@@ -650,17 +655,6 @@ end
 
 _Typeof(x) = isa(x,Type) ? Type{x} : typeof(x)
 
-function vatuple_name(k::Expr)
-    if k.head == :(::) && k.args[2].head == :(...)
-        k = k.args[1]
-    elseif k.head == :(...)
-        k = k.args[1]
-    else
-        error()
-    end
-    k
-end
-
 #TODO: The method should probably just start at it's first definition line
 function is_function_def(ex)
     (isa(ex,Expr) && ex.head == :(=) && isexpr(ex.args[1],:call)) ||
@@ -760,7 +754,8 @@ function process_loctree(res, contents, linfo, complete = true)
     lower!(res)
     parsedexpr = Lexer.¬(res)
     parsedloc = Lexer.√(res)
-    loweredast = Base.uncompressed_ast(linfo).args[3]
+    code = Base.uncompressed_ast(linfo)
+    loweredast = Expr(:body); loweredast.args = code
     local thecalls, theassignments, forlocs
     loctree = try
         thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)
@@ -858,25 +853,21 @@ end
 
 function prepare_locals(linfo, argvals = ())
     # Construct the environment from the arguments
-    ast = Base.uncompressed_ast(linfo.def)
-    argnames = ast.args[1]
+    argnames = linfo.slotnames[1:linfo.nargs]
     env = Dict{Symbol,Nullable{Any}}()
     if argvals != () && length(argvals) < length(argnames) # Empty Vararg
-        env[vatuple_name(argnames[end])] = ()
+        env[argnames[end]] = ()
     end
     for (i,k) in enumerate(argnames)
-        if isa(k, Expr) # Vararg tuple
-            k = vatuple_name(k)
-            haskey(env, k) && continue
+        if linfo.isva && i == length(argnames)
             env[k] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
             break
         end
         env[k] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
     end
     # add local variables initially undefined
-    vinfo = ast.args[2][1]
-    for i = (length(argnames)+1):length(vinfo)
-        env[vinfo[i][1]] = Nullable{Any}()
+    for i = linfo.nargs+1:length(linfo.slotnames)
+        env[linfo.slotnames[i]] = Nullable{Any}()
     end
     env
 end
@@ -919,8 +910,8 @@ function enter_call_expr(interp, expr)
 end
 
 function print_linfo_desc(io::IO, linfo)
-    argnames = Base.uncompressed_ast(linfo).args[1][2:end]
-    spectypes = map(x->x[2], Base.uncompressed_ast(linfo).args[2][1][2:end])
+    argnames = linfo.slotnames[2:linfo.nargs]
+    spectypes = Any[Any for i=1:length(argnames)] #linfo.slottypes[2:end]
     print(linfo.name,'(')
     first = true
     for (argname, argT) in zip(argnames, spectypes)
@@ -965,11 +956,7 @@ end
 
 function print_frame(io::IO, num, interp::Interpreter)
     print(io, "[$num] ")
-    if isa(interp.meth, LambdaInfo)
-        print_linfo_desc(io, interp.meth)
-    else
-        println(io, interp.meth)
-    end
+    print_linfo_desc(io, interp.linfo)
     print_locals(io, interp.env.locals,
         (io,name)->println(io, "<undefined>"))
 end
@@ -978,7 +965,7 @@ print_backtrace(_::Void) = nothing
 include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveutil.jl"))
 
 get_env_for_eval(interp::Interpreter) = interp.env
-get_linfo(interp::Interpreter) = interp.meth.func
+get_linfo(interp::Interpreter) = interp.linfo
 
 function unknown_command(interp::Interpreter, command)
     print_with_color(:red,"\nUnknown command!\n");
@@ -1252,7 +1239,10 @@ function RunDebugREPL(top_interp)
         linfo = first(methods(lam)).func
         # New interpreter is on detached stack
         loctree, code = process_loctree(res, command, linfo, false)
-        einterp = enter(nothing,Base.uncompressed_ast(linfo).args[3],env,Any[], loctree = loctree, code = code)
+        linfo = first(methods(lam)).func
+        code = Base.uncompressed_ast(linfo)
+        body = Expr(:body); body.args = code
+        einterp = enter(linfo,body,env,Any[], loctree = loctree, code = code)
         try
             show(finish!(einterp))
             println(); println()
