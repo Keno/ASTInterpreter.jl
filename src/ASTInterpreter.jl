@@ -11,10 +11,6 @@ import JuliaParser.Lexer: SourceNode, SourceRange
 
 import AbstractTrees: children, printnode
 
-function children(x::Expr)
-    x.args
-end
-
 pretty_repr(x) = (string(x), :default)
 pretty_repr(x::LineNumberNode) = (string(x.file, ": ", x.line), :red)
 function pretty_repr(x::Expr)
