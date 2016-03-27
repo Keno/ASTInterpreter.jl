@@ -789,7 +789,9 @@ function reparse_meth(meth)
             end
         end
     catch err
-        isa(err, MatchingError) || rethrow(err)
+        if fancy_mode
+            isa(err, MatchingError) || rethrow(err)
+        end
         expression_mismatch(loweredast, parsedexpr, collectcalls(SourceFile(contents), parsedexpr, parsedloc)...)
         nothing
     end
