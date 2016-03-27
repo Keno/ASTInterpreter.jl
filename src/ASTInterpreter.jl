@@ -760,8 +760,8 @@ function reparse_meth(meth)
     parsedexpr = res.expr
     parsedloc = res.loc
     loweredast = Base.uncompressed_ast(linfo).args[3]
-    thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
     loctree = try
+        thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
         treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
             if isexpr(node, :call)
                 call = node.args[1]
