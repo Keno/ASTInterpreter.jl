@@ -60,6 +60,7 @@ type Interpreter
     code::AbstractString
     loctree::Any
     retval::Any
+    exception_frames::Vector{Int}
 end
 
 function make_shadowtree(tree)
@@ -91,7 +92,7 @@ function enter(meth, tree::Expr, env, stack = Any[]; loctree = nothing, code = "
     shadowtree, it = make_shadowtree(tree)
 
     interp = Interpreter(stack, env, meth, tree, it,
-        start(it), nothing, shadowtree, code, loctree, nothing)
+        start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}())
     push!(stack, interp)
     ind, node = next_expr!(interp)
 
@@ -512,6 +513,14 @@ function _step_expr(interp)
                 ret = Any
             elseif node.head == :type_goto
                 ret = nothing
+            elseif node.head == :enter
+                push!(interp.exception_frames, node.args[1])
+                ret = node
+            elseif node.head == :leave
+                for _ = 1:node.args[1]
+                    pop!(interp.exception_frames)
+                end
+                ret = node
             else
                 ret = eval(node)
             end
@@ -727,7 +736,10 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
             candidate = shift!(thecalls)
             println("Matching call $node with $candidate")
         elseif isexpr(node, :(=))
-            isempty(theassignments) && return nothing
+            if isempty(theassignments)
+                println("Failed to match $node")
+                return    
+            end
             println("Matching assignment $node with $(shift!(theassignments))")
         end
         nothing
@@ -980,6 +992,27 @@ end
 can_step(_) = false
 can_step(interp::Interpreter) = true
 
+loc_if_available(interp, ind) = try
+    Tree(interp.loctree)[ind].loc
+catch err
+    isa(err, BoundsError) || rethrow(err)
+    SourceRange()
+end
+
+function process_exception!(interp::Interpreter, D::Parser.Diagnostic, istop)
+    if !isempty(interp.exception_frames)
+        target = interp.exception_frames[end]
+        goto!(interp, target)
+        ind, _ = interp.next_expr
+        diag(D, loc_if_available(interp, ind), "caught here",:note)
+        return true
+    else
+        ind, _ = interp.next_expr
+        !istop && diag(D, loc_if_available(interp, ind), "while evaluating expression",:note)
+        return false
+    end
+end
+
 function RunDebugREPL(top_interp)
     level = 1
     prompt(level, name) = "$level|$name > "
@@ -1107,6 +1140,10 @@ function RunDebugREPL(top_interp)
             LineEdit.reset_state(s)
             return true
         elseif command == "loc"
+            if interp.loctree == nothing
+                print_with_color(:red, STDERR, "No loctree available\n")
+                return true
+            end
             w = create_widget(interp.loctree,interp.code)
             TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
                 Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
@@ -1136,13 +1173,29 @@ function RunDebugREPL(top_interp)
             end
             (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
             level = 1
-            if command == "ns" ? !next_statement!(interp) :
-               command == "nc" ? !next_call!(interp) :
-               command == "n" ? !next_line!(interp) :
-                !step_expr(interp) #= command == "se" =#
-                interp = top_interp = done_stepping(s, interp; to_next_call = command == "n")
-                LineEdit.reset_state(s)
-                return true
+            try
+                if command == "ns" ? !next_statement!(interp) :
+                   command == "nc" ? !next_call!(interp) :
+                   command == "n" ? !next_line!(interp) :
+                    !step_expr(interp) #= command == "se" =#
+                    interp = top_interp = done_stepping(s, interp; to_next_call = command == "n")
+                    LineEdit.reset_state(s)
+                    return true
+                end
+            catch err
+                isa(err, Parser.Diagnostic) || rethrow(err)
+                caught = false
+                for interp_idx in length(top_interp.stack):-1:1
+                    if process_exception!(top_interp.stack[interp_idx], err, interp_idx == length(top_interp.stack))
+                        interp = top_interp = top_interp.stack[interp_idx]
+                        resize!(top_interp.stack, interp_idx)
+                        caught = true
+                        break
+                    end
+                end
+                !caught && rethrow(err)
+                Main.JuliaParser.Parser.display_diagnostic(STDERR, interp.code, err)
+                println(STDERR)
             end
         else
             unknown_command(interp, command)
