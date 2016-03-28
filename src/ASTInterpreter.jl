@@ -275,7 +275,7 @@ function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mod
 
             if offset != -1 % UInt32
                 startoffset, stopoffset =
-                    compute_source_offsets(interp, offset, startline,
+                    compute_source_offsets(interp.code, offset, startline,
                         stopline, file = file)
 
                 ###### New Algorithm
