@@ -501,12 +501,19 @@ function _step_expr(interp)
                     return goto!(interp, node.args[2])
                 end
             elseif node.head == :call
-                # Don't go through eval since this may have unqouted, symbols and
-                # exprs
                 f = to_function(node.args[1])
                 if isa(f, Core.IntrinsicFunction)
+                    # Special handling to quote any literal symbols that may still
+                    # be in here, so we can pass it into eval
+                    for i in 1:length(node.args)
+                        if isa(node.args[i], Symbol)
+                            node.args[i] = QuoteNode(node.args[i])
+                        end
+                    end
                     ret = eval(node)
                 else
+                    # Don't go through eval since this may have unqouted, symbols and
+                    # exprs
                     ret = f(node.args[2:end]...)
                 end
             elseif node.head == :static_typeof
@@ -860,6 +867,7 @@ function prepare_locals(linfo, argvals = ())
     for (i,k) in enumerate(argnames)
         if isa(k, Expr) # Vararg tuple
             k = vatuple_name(k)
+            haskey(env, k) && continue
             env[k] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
             break
         end
@@ -884,7 +892,7 @@ function enter_call_expr(interp, expr)
             allargs = allargs[2:end]
         end
     end
-    if !isa(f, Core.Builtin)
+    if !isa(f, Core.Builtin) && !isa(f, Core.IntrinsicFunction)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
         method = try
