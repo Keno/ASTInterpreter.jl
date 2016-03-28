@@ -8,6 +8,7 @@ using JuliaParser
 using JuliaParser.Lexer
 using Base.Meta
 import JuliaParser.Lexer: SourceNode, SourceRange
+import JuliaParser.Parser: diag
 
 import AbstractTrees: children, printnode
 
@@ -147,6 +148,7 @@ Lexer.merge(x::ReplacementLoc,y::ReplacementLoc) =
     Lexer.merge(Lexer.normalize(x),Lexer.normalize(y))
 Lexer.merge(x,y::ReplacementLoc) = Lexer.merge(x,Lexer.normalize(y))
 Lexer.merge(x::ReplacementLoc,y::Void) = Lexer.merge(Lexer.normalize(x),y)
+Lexer.merge(x::ReplacementLoc,y::Lexer.Token) = Lexer.merge(Lexer.normalize(x),y)
 Lexer.merge(x::ReplacementLoc,y) = Lexer.merge(Lexer.normalize(x),y)
 
 # SequencingReplacementLoc
@@ -451,71 +453,82 @@ function goto!(interp, target)
     return done!(interp)
 end
 
+const fancy_backtraces = true
+
 function _step_expr(interp)
     ind, node = interp.next_expr
-
-    if isa(node, Expr) && node.head == :return
-        interp.retval = node.args[1]
-        return false
-    end
-    if isa(node, Symbol) || isa(node,GenSym)
-        # Check if we're the LHS of an assignment
-        if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
-            ret = node
-        elseif isa(node,GenSym)
-            ret = interp.env.gensyms[node.id]
-        elseif haskey(interp.env.locals, node)
-            val = interp.env.locals[node]
-            if isnull(val)
-                error("local variable $node not defined")
-            end
-            ret = get(val)
-        else
-            ret = eval(node)
+    local ret
+    try
+        if isa(node, Expr) && node.head == :return
+            interp.retval = node.args[1]
+            return false
         end
-    elseif isa(node, Expr)
-        if node.head == :(=)
-            lhs = node.args[1]
-            rhs = node.args[2]
-            if isa(lhs, GenSym)
-                interp.env.gensyms[lhs.id] = rhs
-            elseif isa(lhs, GlobalRef)
-                eval(:($lhs = $(QuoteNode(rhs))))
+        if isa(node, Symbol) || isa(node,GenSym)
+            # Check if we're the LHS of an assignment
+            if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
+                ret = node
+            elseif isa(node,GenSym)
+                ret = interp.env.gensyms[node.id]
+            elseif haskey(interp.env.locals, node)
+                val = interp.env.locals[node]
+                if isnull(val)
+                    error("local variable $node not defined")
+                end
+                ret = get(val)
             else
-                interp.env.locals[lhs] = Nullable{Any}(rhs)
-            end
-            # Special case hack for readability.
-            # ret = rhs
-            ret = node
-        elseif node.head == :&
-            ret = node
-        elseif node.head == :gotoifnot
-            ret = node
-            if !node.args[1]
-                return goto!(interp, node.args[2])
-            end
-        elseif node.head == :call
-            # Don't go through eval since this may have unqouted, symbols and
-            # exprs
-            f = to_function(node.args[1])
-            if isa(f, Core.IntrinsicFunction)
                 ret = eval(node)
-            else
-                ret = f(node.args[2:end]...)
             end
-        elseif node.head == :static_typeof
-            ret = Any
-        elseif node.head == :type_goto
-            ret = nothing
+        elseif isa(node, Expr)
+            if node.head == :(=)
+                lhs = node.args[1]
+                rhs = node.args[2]
+                if isa(lhs, GenSym)
+                    interp.env.gensyms[lhs.id] = rhs
+                elseif isa(lhs, GlobalRef)
+                    eval(:($lhs = $(QuoteNode(rhs))))
+                else
+                    interp.env.locals[lhs] = Nullable{Any}(rhs)
+                end
+                # Special case hack for readability.
+                # ret = rhs
+                ret = node
+            elseif node.head == :&
+                ret = node
+            elseif node.head == :gotoifnot
+                ret = node
+                if !node.args[1]
+                    return goto!(interp, node.args[2])
+                end
+            elseif node.head == :call
+                # Don't go through eval since this may have unqouted, symbols and
+                # exprs
+                f = to_function(node.args[1])
+                if isa(f, Core.IntrinsicFunction)
+                    ret = eval(node)
+                else
+                    ret = f(node.args[2:end]...)
+                end
+            elseif node.head == :static_typeof
+                ret = Any
+            elseif node.head == :type_goto
+                ret = nothing
+            else
+                ret = eval(node)
+            end
+        elseif isa(node, GotoNode)
+            return goto!(interp, node.label)
+        elseif isa(node, QuoteNode)
+            ret = node.value
         else
             ret = eval(node)
         end
-    elseif isa(node, GotoNode)
-        return goto!(interp, node.label)
-    elseif isa(node, QuoteNode)
-        ret = node.value
-    else
-        ret = eval(node)
+    catch err
+        (!fancy_backtraces || interp.loctree == nothing) && rethrow(err)
+        buf = IOBuffer()
+        Base.showerror(buf, err)
+        D = diag(SourceRange(),takebuf_string(buf))
+        diag(D, Tree(interp.loctree)[ind].loc, "while running this expression", :note)
+        rethrow(D)
     end
     _evaluated!(interp, ret)
     true
@@ -638,7 +651,7 @@ function is_function_def(ex)
     isexpr(ex,:function)
 end
 
-function collectcalls(file, parsedexpr, parsedloc)
+function collectcalls(file, parsedexpr, parsedloc, complete = true)
     thecalls = Any[]
     theassignments = Any[]
     forlocs = Any[]
@@ -693,7 +706,7 @@ function collectcalls(file, parsedexpr, parsedloc)
             push!(theassignments, (SourceRange(), nothing))
         end
     end
-    thecalls = thecalls[2:end], theassignments, forlocs
+    thecalls = complete ? thecalls[2:end] : thecalls, theassignments, forlocs
 end
 
 function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, forlocs)
@@ -707,7 +720,10 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
     display(Tree(parsedexpr))
     treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
         if isexpr(node, :call)
-            isempty(thecalls) && return nothing
+            if isempty(thecalls)
+                println("Failed to match $node")
+                return
+            end
             candidate = shift!(thecalls)
             println("Matching call $node with $candidate")
         elseif isexpr(node, :(=))
@@ -719,6 +735,68 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
 end
 
 immutable MatchingError
+end
+
+function process_loctree(res, contents, linfo, complete = true)
+    lower!(res)
+    parsedexpr = Lexer.¬(res)
+    parsedloc = Lexer.√(res)
+    loweredast = Base.uncompressed_ast(linfo).args[3]
+    local thecalls, theassignments, forlocs
+    loctree = try
+        thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)
+        treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
+            if isexpr(node, :call)
+                call = node.args[1]
+                isempty(thecalls) && throw(MatchingError())
+                candidate = shift!(thecalls)
+                if isa(candidate[1], SRLoc)
+                    ASTInterpreter.sequence!(candidate[1], ind)
+                    SourceNode(candidate[1],childlocs)
+                else
+                    candidate[1]
+                end
+            elseif isexpr(node, :(=))
+                isempty(theassignments) && throw(MatchingError())
+                x = shift!(theassignments)
+                x = x[1]
+                if isa(x, SRLoc)
+                    ASTInterpreter.sequence!(x, ind)
+                    SourceNode(x,childlocs)
+                else
+                    x
+                end
+            else
+                SourceNode(SourceRange(),childlocs)
+            end
+        end
+    catch err
+        if isa(err, MatchingError) 
+            expression_mismatch(loweredast, parsedexpr, collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)...)
+        elseif fancy_mode
+            rethrow(err)
+        end
+        nothing
+    end
+
+    function postprocess!(loctree, forlocs)
+        for (forloc,forloc2) in forlocs
+            # Add a location to the parent of !done
+            negind = forloc.sequence[5][1:(end-1)]
+            newloc1 = deepcopy(forloc)
+            newloc2 = deepcopy(forloc)
+            # TODO: This really needs to have a better way
+            newloc1.sequence[4] = ASTInterpreter.Coloring(newloc1.sequence[4],:yellow)
+            Tree(loctree)[negind] = SourceNode(newloc1,Tree(loctree)[negind].children)
+        end
+    end
+    if loctree != nothing
+        postprocess!(loctree, forlocs)
+        # Make sure we have the whole bounds of the function
+        loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
+    end
+
+    loctree, contents    
 end
 
 function reparse_meth(meth)
@@ -756,65 +834,7 @@ function reparse_meth(meth)
         end
         rethrow(err)
     end
-    lower!(res)
-    parsedexpr = res.expr
-    parsedloc = res.loc
-    loweredast = Base.uncompressed_ast(linfo).args[3]
-    local thecalls, theassignments, forlocs
-    loctree = try
-        thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc)
-        treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
-            if isexpr(node, :call)
-                call = node.args[1]
-                isempty(thecalls) && throw(MatchingError())
-                candidate = shift!(thecalls)
-                if isa(candidate[1], SRLoc)
-                    ASTInterpreter.sequence!(candidate[1], ind)
-                    SourceNode(candidate[1],childlocs)
-                else
-                    candidate[1]
-                end
-            elseif isexpr(node, :(=))
-                isempty(theassignments) && throw(MatchingError())
-                x = shift!(theassignments)
-                x = x[1]
-                if isa(x, SRLoc)
-                    ASTInterpreter.sequence!(x, ind)
-                    SourceNode(x,childlocs)
-                else
-                    x
-                end
-            else
-                SourceNode(SourceRange(),childlocs)
-            end
-        end
-    catch err
-        if isa(err, MatchingError) 
-            expression_mismatch(loweredast, parsedexpr, collectcalls(SourceFile(contents), parsedexpr, parsedloc)...)
-        elseif fancy_mode
-            rethrow(err)
-        end
-        nothing
-    end
-
-    function postprocess!(loctree, forlocs)
-        for (forloc,forloc2) in forlocs
-            # Add a location to the parent of !done
-            negind = forloc.sequence[5][1:(end-1)]
-            newloc1 = deepcopy(forloc)
-            newloc2 = deepcopy(forloc)
-            # TODO: This really needs to have a better way
-            newloc1.sequence[4] = ASTInterpreter.Coloring(newloc1.sequence[4],:yellow)
-            Tree(loctree)[negind] = SourceNode(newloc1,Tree(loctree)[negind].children)
-        end
-    end
-    if loctree != nothing
-        postprocess!(loctree, forlocs)
-        # Make sure we have the whole bounds of the function
-        loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
-    end
-
-    loctree, contents
+    process_loctree(res, contents, linfo)
 end
 
 function prepare_locals(linfo, argvals = ())
@@ -1147,7 +1167,20 @@ function RunDebugREPL(top_interp)
         end
         xbuf = copy(buf)
         command = strip(takebuf_string(buf))
-        body = parse(command)
+        res = try
+            ts = Lexer.TokenStream{Lexer.SourceLocToken}(command)
+            ts.filename = "REPL"
+            res = Main.JuliaParser.Parser.parse(ts)
+        catch e
+            if !isa(e, Main.JuliaParser.Parser.Diagnostic)
+                REPL.display_error(STDERR, err, Base.catch_backtrace())
+            else
+                Main.JuliaParser.Parser.display_diagnostic(STDERR, command, e)
+            end
+            REPL.println(STDERR); REPL.println(STDERR)
+            return true
+        end
+        body = Lexer.¬(res)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
         env = get_env_for_eval(interp)
@@ -1155,21 +1188,33 @@ function RunDebugREPL(top_interp)
         map!(x->(x===selfsym ? unusedsym : x), lnames)
         f = Expr(:->,Expr(:tuple,lnames...), body)
         lam = get_linfo(interp).module.eval(f)
+        linfo = first(methods(lam)).func
         # New interpreter is on detached stack
-        einterp = enter(nothing,Base.uncompressed_ast(first(methods(lam)).func).args[3],env,Any[])
+        global fancy_mode
+        old_fancy = fancy_mode
+        fancy_mode = true
+        loctree, code = process_loctree(res, command, linfo, false)
+        fancy_mode = old_fancy
+        einterp = enter(nothing,Base.uncompressed_ast(linfo).args[3],env,Any[], loctree = loctree, code = code)
         try
             show(finish!(einterp))
             println(); println()
             LineEdit.reset_state(s)
         catch err
-            REPL.display_error(STDERR, err, Base.catch_backtrace())
-            REPL.println(STDERR); REPL.println(STDERR)
-            # Convenience hack. We'll see if this is more useful or annoying
-            for c in all_commands
-                !startswith(command, c) && continue
-                LineEdit.transition(s, panel)
-                LineEdit.state(s, panel).input_buffer = xbuf
-                break
+            if isa(err, Parser.Diagnostic)
+                Main.JuliaParser.Parser.display_diagnostic(STDOUT, command, err)
+                println(STDOUT)
+                return true
+            else
+                REPL.display_error(STDERR, err, Base.catch_backtrace())
+                REPL.println(STDERR); REPL.println(STDERR)
+                # Convenience hack. We'll see if this is more useful or annoying
+                for c in all_commands
+                    !startswith(command, c) && continue
+                    LineEdit.transition(s, panel)
+                    LineEdit.state(s, panel).input_buffer = xbuf
+                    break
+                end
             end
         end
         return true
