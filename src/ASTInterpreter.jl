@@ -47,6 +47,8 @@ immutable Environment
     sparams::Vector{Any}
 end
 
+Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.gensyms), copy(e.sparams))
+
 type Interpreter
     stack::Vector{Any}
     env::Environment
