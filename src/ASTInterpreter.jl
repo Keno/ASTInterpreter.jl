@@ -42,11 +42,10 @@ end
 # EvaluationTree
 
 immutable Environment
-    locals::Dict{Symbol, Nullable{Any}}
-    gensyms::Dict{Int, Any}
+    locals::Vector{Nullable{Any}}
+    gensyms::Vector{Any}
+    sparams::Vector{Any}
 end
-Environment() = Environment(Dict{Symbol,Nullable{Any}}(),Dict{Symbol,Any}())
-Environment(locals) = Environment(locals,Dict{Int,Any}())
 
 type Interpreter
     stack::Vector{Any}
@@ -470,24 +469,30 @@ function _step_expr(interp)
             if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
                 ret = node
             elseif isa(node,GenSym)
-                ret = interp.env.gensyms[node.id]
+                ret = interp.env.gensyms[node.id+1]
             else
-                sym = interp.linfo.slotnames[node.id]
-                val = interp.env.locals[sym]
-                if isnull(val)
-                    error("local variable $node not defined")
+                nslots = length(interp.env.locals)
+                id = node.id
+                if id > nslots
+                    # hack: static parameters placed at end of locals for interactive exprs
+                    ret = interp.env.sparams[id - nslots]
+                else
+                    val = interp.env.locals[id]
+                    if isnull(val)
+                        sym = interp.linfo.slotnames[id]
+                        error("local variable $sym not defined")
+                    end
+                    ret = get(val)
                 end
-                ret = get(val)
             end
         elseif isa(node, Expr)
             if node.head == :(=)
                 lhs = node.args[1]
                 rhs = node.args[2]
                 if isa(lhs, GenSym)
-                    interp.env.gensyms[lhs.id] = rhs
+                    interp.env.gensyms[lhs.id+1] = rhs
                 elseif isa(lhs, Slot)
-                    sym = interp.linfo.slotnames[lhs.id]
-                    interp.env.locals[sym] = Nullable{Any}(rhs)
+                    interp.env.locals[lhs.id] = Nullable{Any}(rhs)
                 elseif isa(lhs, GlobalRef)
                     eval(:($lhs = $(QuoteNode(rhs))))
                 end
@@ -532,7 +537,7 @@ function _step_expr(interp)
                 end
                 ret = node
             elseif node.head == :static_parameter
-                ret = get(interp.env.locals[interp.linfo.sparam_syms[node.args[1]]])
+                ret = interp.env.sparams[node.args[1]]
             else
                 ret = eval(node)
             end
@@ -854,22 +859,25 @@ end
 function prepare_locals(linfo, argvals = ())
     # Construct the environment from the arguments
     argnames = linfo.slotnames[1:linfo.nargs]
-    env = Dict{Symbol,Nullable{Any}}()
+    locals = Array(Nullable{Any}, length(linfo.slotflags))
+    ng = isa(linfo.gensymtypes, Int) ? linfo.gensymtypes : length(linfo.gensymtypes)
+    gensyms = Array(Any, ng)
+    sparams = Array(Any, length(linfo.sparam_syms))
     if argvals != () && length(argvals) < length(argnames) # Empty Vararg
-        env[argnames[end]] = ()
+        locals[linfo.nargs] = ()
     end
-    for (i,k) in enumerate(argnames)
+    for i = 1:linfo.nargs
         if linfo.isva && i == length(argnames)
-            env[k] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
+            locals[i] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
             break
         end
-        env[k] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
+        locals[i] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
     end
     # add local variables initially undefined
     for i = linfo.nargs+1:length(linfo.slotnames)
-        env[linfo.slotnames[i]] = Nullable{Any}()
+        locals[i] = Nullable{Any}()
     end
-    env
+    Environment(locals, gensyms, sparams)
 end
 
 function enter_call_expr(interp, expr)
@@ -900,10 +908,10 @@ function enter_call_expr(interp, expr)
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
                            argtypes, method.sig, method.tvars)::SimpleVector
         for i = 1:length(lenv)
-            env[method.func.sparam_syms[i]] = lenv[i]
+            env.sparams[i] = lenv[i]
         end
         loctree, code = reparse_meth(method)
-        newinterp = enter(method,Environment(env),interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
+        newinterp = enter(method,env,interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
         return newinterp
     end
     nothing
@@ -923,26 +931,39 @@ function print_linfo_desc(io::IO, linfo)
     println(") at ",linfo.file,":",linfo.line)
 end
 
-function print_locals(io::IO, locals, undef_callback)
-    for (name,val) in locals
-        visible = true
-        sn = string(name)
-        if startswith(sn, "#")
-            lasthash = rsearchindex(sn, "#")
-            if lasthash == 1     # mangled names have 2 '#'s in them,
-                visible = false  # hidden names have 1.
-            end
+function sym_visible(name)
+    sn = string(name)
+    if startswith(sn, "#")
+        lasthash = rsearchindex(sn, "#")
+        if lasthash == 1  # mangled names have 2 '#'s in them,
+            return false  # hidden names have 1.
         end
-        if visible
-            print("  | ")
-            if isnull(val)
-                print(io, name, " = ")
-                undef_callback(io,name)
-            else
-                val = get(val)
-                println(io, name, "::", typeof(val), " = ", val)
-            end
+    end
+    if sn == "#temp#" || name == :__temp__
+        return false
+    end
+    return true
+end
+
+function print_var(io::IO, name, val::Nullable, undef_callback)
+    if sym_visible(name)
+        print("  | ")
+        if isnull(val)
+            print(io, name, " = ")
+            undef_callback(io,name)
+        else
+            val = get(val)
+            println(io, name, "::", typeof(val), " = ", val)
         end
+    end
+end
+
+function print_locals(io::IO, linfo, env::Environment, undef_callback)
+    for i = 1:length(env.locals)
+        print_var(io, linfo.slotnames[i], env.locals[i], undef_callback)
+    end
+    for i = 1:length(env.sparams)
+        print_var(io, linfo.sparam_syms[i], Nullable{Any}(env.sparams[i]), undef_callback)
     end
 end
 
@@ -957,7 +978,7 @@ end
 function print_frame(io::IO, num, interp::Interpreter)
     print(io, "[$num] ")
     print_linfo_desc(io, interp.linfo)
-    print_locals(io, interp.env.locals,
+    print_locals(io, interp.linfo, interp.env,
         (io,name)->println(io, "<undefined>"))
 end
 print_backtrace(_::Void) = nothing
@@ -1232,8 +1253,8 @@ function RunDebugREPL(top_interp)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
         env = get_env_for_eval(interp)
-        lnames = Any[keys(env.locals)...]
-        map!(x->(x===selfsym ? unusedsym : x), lnames)
+        lnames = Any[interp.linfo.slotnames[2:end]..., interp.linfo.sparam_syms...]
+        map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
         f = Expr(:->,Expr(:tuple,lnames...), body)
         lam = get_linfo(interp).module.eval(f)
         linfo = first(methods(lam)).func
