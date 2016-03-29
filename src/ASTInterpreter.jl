@@ -761,8 +761,8 @@ function process_loctree(res, contents, linfo, complete = true)
     lower!(res)
     parsedexpr = Lexer.¬(res)
     parsedloc = Lexer.√(res)
-    code = Base.uncompressed_ast(linfo)
-    loweredast = Expr(:body); loweredast.args = code
+    stmts = Base.uncompressed_ast(linfo)
+    loweredast = Expr(:body); loweredast.args = stmts
     local thecalls, theassignments, forlocs
     loctree = try
         thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)
@@ -876,7 +876,7 @@ function prepare_locals(linfo, argvals = ())
         locals[i] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
     end
     # add local variables initially undefined
-    for i = linfo.nargs+1:length(linfo.slotnames)
+    for i = (linfo.nargs+1):length(linfo.slotnames)
         locals[i] = Nullable{Any}()
     end
     Environment(locals, gensyms, sparams)
@@ -1263,8 +1263,8 @@ function RunDebugREPL(top_interp)
         # New interpreter is on detached stack
         loctree, code = process_loctree(res, command, linfo, false)
         linfo = first(methods(lam)).func
-        code = Base.uncompressed_ast(linfo)
-        body = Expr(:body); body.args = code
+        stmts = Base.uncompressed_ast(linfo)
+        body = Expr(:body); body.args = stmts
         einterp = enter(linfo,body,env,Any[], loctree = loctree, code = code)
         try
             show(finish!(einterp))
