@@ -1251,11 +1251,7 @@ function RunDebugREPL(top_interp)
         lam = get_linfo(interp).module.eval(f)
         linfo = first(methods(lam)).func
         # New interpreter is on detached stack
-        global fancy_mode
-        old_fancy = fancy_mode
-        fancy_mode = true
         loctree, code = process_loctree(res, command, linfo, false)
-        fancy_mode = old_fancy
         einterp = enter(nothing,Base.uncompressed_ast(linfo).args[3],env,Any[], loctree = loctree, code = code)
         try
             show(finish!(einterp))
