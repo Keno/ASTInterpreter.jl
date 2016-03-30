@@ -76,7 +76,7 @@ function make_shadowtree(tree)
             node.head == :inbounds || node.head == :line)
             unevaluated = false
         end
-        if (isa(node, GenSym) || isa(node, Symbol)) && isexpr(parent,:(=)) && parent.args[1] == node
+        if (isa(node, GenSym) || isa(node, Symbol) || isa(node, Slot) || isa(node,GlobalRef)) && isexpr(parent,:(=)) && parent.args[1] == node
             unevaluated = false
         end
         if isexpr(parent, :static_typeof)
@@ -256,7 +256,21 @@ global fancy_mode = false
 function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
         print_sourcecode(interp.linfo, interp.code, determine_line(interp, highlight))
-        println("About to run: ", interp.shadowtree[highlight].tree.x)
+        ex = interp.shadowtree[highlight].tree.x
+        # print slots with their names
+        wrap = !isa(ex,Expr)
+        ex = wrap ? Expr(:block, ex) : copy(ex)
+        treemap!(function (x)
+                     if isa(x, Slot)
+                         name = interp.linfo.slotnames[x.id]
+                         return sym_visible(name) ? name : x
+                     else
+                         return x
+                     end
+                 end,
+                 PreOrderDFS(ex))
+        if wrap; ex = ex.args[1]; end
+        println("About to run: ", ex)
     elseif interp.loctree === nothing
         print_shadowtree(interp.shadowtree, highlight)
     else
@@ -411,7 +425,6 @@ function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mod
                     end
                 end
 
-
                 for loc in locs
                     if isa(loc[2],SRLoc)
                         for x in loc[2].sequence
@@ -519,7 +532,7 @@ function _step_expr(interp)
                     # Special handling to quote any literal symbols that may still
                     # be in here, so we can pass it into eval
                     for i in 1:length(node.args)
-                        if isa(node.args[i], Symbol)
+                        if isa(node.args[i], Union{Symbol,GenSym,Slot,GlobalRef})
                             node.args[i] = QuoteNode(node.args[i])
                         end
                     end
