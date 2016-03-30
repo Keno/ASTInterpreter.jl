@@ -903,11 +903,7 @@ function enter_call_expr(interp, expr)
     allargs = expr.args
     if is(f,Base._apply)
         f = to_function(allargs[2])
-        if isa(allargs[3],Tuple) && length(allargs) == 3
-            allargs = [allargs[2], allargs[3]...]
-        else
-            allargs = allargs[2:end]
-        end
+        allargs = Base.append_any((allargs[2],), allargs[3:end]...)
     end
     if !isa(f, Core.Builtin) && !isa(f, Core.IntrinsicFunction)
         args = allargs[2:end]
