@@ -1285,11 +1285,11 @@ function RunDebugREPL(top_interp)
         try
             show(finish!(einterp))
             println(); println()
-            LineEdit.reset_state(s)
         catch err
             if isa(err, Parser.Diagnostic)
                 Main.JuliaParser.Parser.display_diagnostic(STDOUT, command, err)
                 println(STDOUT)
+                LineEdit.reset_state(s)
                 return true
             else
                 REPL.display_error(STDERR, err, Base.catch_backtrace())
@@ -1303,6 +1303,7 @@ function RunDebugREPL(top_interp)
                 end
             end
         end
+        LineEdit.reset_state(s)
         return true
     end
 
