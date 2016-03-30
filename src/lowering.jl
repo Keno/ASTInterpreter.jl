@@ -48,5 +48,5 @@ function do_lowering(ex)
 end
 
 function lower!(ex)
-    treemap!(do_lowering,PreOrderDFS(ex))
+    ex = treemap!(do_lowering,PreOrderDFS(ex))
 end
