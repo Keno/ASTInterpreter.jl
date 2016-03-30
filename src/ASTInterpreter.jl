@@ -209,7 +209,7 @@ end
 
 function print_sourcecode(linfo, code, line; file = SourceFile(code))
     startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
-        linfo.line-1, line+3; file=file)
+        max(1,linfo.line-1), line+3; file=file)
 
     # Compute necessary data for line numbering
     startline = compute_line(file, startoffset)
