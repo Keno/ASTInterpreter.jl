@@ -746,6 +746,10 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
     if !fancy_mode
         return nothing
     end
+    if loweredast == nothing
+        println("Failed to lower expression")
+        return
+    end
     println("Failed to match parsed and lowered ASTs. This is a bug (or rather missing coverage).")
     println("Falling back to unsugared mode.")
     println("I attempted the following matching:")
@@ -774,13 +778,16 @@ immutable MatchingError
 end
 
 function process_loctree(res, contents, linfo, complete = true)
-    lower!(res)
     parsedexpr = Lexer.¬(res)
     parsedloc = Lexer.√(res)
-    stmts = Base.uncompressed_ast(linfo)
-    loweredast = Expr(:body); loweredast.args = stmts
+    loweredast = nothing
     local thecalls, theassignments, forlocs
     loctree = try
+        res = lower!(res)
+        parsedexpr = Lexer.¬(res)
+        parsedloc = Lexer.√(res)
+        stmts = Base.uncompressed_ast(linfo)
+        loweredast = Expr(:body); loweredast.args = stmts
         thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)
         treemap(PostOrderDFS(loweredast)) do ind, node, childlocs
             if isexpr(node, :call)
