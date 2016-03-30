@@ -505,6 +505,9 @@ function _step_expr(interp)
                 ret = node
             elseif node.head == :gotoifnot
                 ret = node
+                if !isa(node.args[1], Bool)
+                    throw(TypeError(interp.linfo.name, "if", Bool, node.args[1]))
+                end
                 if !node.args[1]
                     return goto!(interp, node.args[2])
                 end
