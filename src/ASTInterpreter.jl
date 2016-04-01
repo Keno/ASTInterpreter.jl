@@ -1,3 +1,4 @@
+__precompile__()
 module ASTInterpreter
 
 export enter, Environment, @enter
@@ -192,7 +193,7 @@ end
 function determine_line(interp, highlight)
     line = interp.linfo.line
     # Find a line number node previous to this expression
-    if highlight !== nothing
+    if highlight !== nothing && !isempty(highlight)
         exprtree = interp.shadowtree.tree.x
         for i = highlight[1]:-1:1
             expr = exprtree.args[i]
