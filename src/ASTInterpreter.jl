@@ -1291,7 +1291,7 @@ function RunDebugREPL(top_interp)
             show(finish!(einterp))
             println(); println()
         catch err
-            if isa(err, Diagnostic)
+            if isa(err, AbstractDiagnostic)
                 display_diagnostic(STDOUT, command, err)
                 println(STDOUT)
                 LineEdit.reset_state(s)
