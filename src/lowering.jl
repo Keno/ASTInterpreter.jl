@@ -2,7 +2,7 @@
 # matching for the AST Interpreter
 
 import JuliaParser: Lexer
-import JuliaParser.Lexer: ¬, ⨳, ⪥, SourceExpr
+import JuliaParser.Tokens: ¬, ⨳, ⪥, SourceExpr
 
 function do_lowering(ex)
     isa(¬ex, Expr) || return ex

@@ -5,10 +5,11 @@ import Base: LineEdit, REPL
 
 using AbstractTrees
 using JuliaParser
-using JuliaParser.Lexer
+using JuliaParser: Lexer, Tokens
 using Base.Meta
-import JuliaParser.Lexer: SourceNode, SourceRange
-import JuliaParser.Parser: diag
+import JuliaParser.Tokens: SourceNode, SourceRange, SourceExpr
+using JuliaParser.Tokens: √
+import JuliaParser.Diagnostics: diag, AbstractDiagnostic, display_diagnostic
 
 import AbstractTrees: children, printnode
 
@@ -146,13 +147,13 @@ immutable SimpleReplacementLoc <: ReplacementLoc
     before::AbstractString
     after::AbstractString
 end
-Lexer.normalize(x::ReplacementLoc) = x.replacing
-Lexer.merge(x::ReplacementLoc,y::ReplacementLoc) =
-    Lexer.merge(Lexer.normalize(x),Lexer.normalize(y))
-Lexer.merge(x,y::ReplacementLoc) = Lexer.merge(x,Lexer.normalize(y))
-Lexer.merge(x::ReplacementLoc,y::Void) = Lexer.merge(Lexer.normalize(x),y)
-Lexer.merge(x::ReplacementLoc,y::Lexer.Token) = Lexer.merge(Lexer.normalize(x),y)
-Lexer.merge(x::ReplacementLoc,y) = Lexer.merge(Lexer.normalize(x),y)
+Tokens.normalize(x::ReplacementLoc) = x.replacing
+Tokens.merge(x::ReplacementLoc,y::ReplacementLoc) =
+    Tokens.merge(Tokens.normalize(x),Tokens.normalize(y))
+Tokens.merge(x,y::ReplacementLoc) = Tokens.merge(x,Tokens.normalize(y))
+Tokens.merge(x::ReplacementLoc,y::Void) = Tokens.merge(Tokens.normalize(x),y)
+Tokens.merge(x::ReplacementLoc,y::Lexer.Token) = Tokens.merge(Tokens.normalize(x),y)
+Tokens.merge(x::ReplacementLoc,y) = Tokens.merge(Tokens.normalize(x),y)
 
 # SequencingReplacementLoc
 type SRLoc <: ReplacementLoc
@@ -837,7 +838,7 @@ function process_loctree(res, contents, linfo, complete = true)
     if loctree != nothing
         postprocess!(loctree, forlocs)
         # Make sure we have the whole bounds of the function
-        loctree = SourceNode(Lexer.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
+        loctree = SourceNode(Tokens.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
     end
 
     loctree, contents    
@@ -1036,7 +1037,7 @@ catch err
     SourceRange()
 end
 
-function process_exception!(interp::Interpreter, D::Parser.Diagnostic, istop)
+function process_exception!(interp::Interpreter, D::AbstractDiagnostic, istop)
     if !isempty(interp.exception_frames)
         target = interp.exception_frames[end]
         goto!(interp, target)
@@ -1220,7 +1221,7 @@ function RunDebugREPL(top_interp)
                     return true
                 end
             catch err
-                isa(err, Parser.Diagnostic) || rethrow(err)
+                isa(err, AbstractDiagnostic) || rethrow(err)
                 caught = false
                 for interp_idx in length(top_interp.stack):-1:1
                     if process_exception!(top_interp.stack[interp_idx], err, interp_idx == length(top_interp.stack))
@@ -1231,7 +1232,7 @@ function RunDebugREPL(top_interp)
                     end
                 end
                 !caught && rethrow(err)
-                Main.JuliaParser.Parser.display_diagnostic(STDERR, interp.code, err)
+                display_diagnostic(STDERR, interp.code, err)
                 println(STDERR)
             end
         else
@@ -1262,10 +1263,10 @@ function RunDebugREPL(top_interp)
             ts.filename = "REPL"
             res = Main.JuliaParser.Parser.parse(ts)
         catch e
-            if !isa(e, Main.JuliaParser.Parser.Diagnostic)
+            if !isa(e, AbstractDiagnostic)
                 REPL.display_error(STDERR, err, Base.catch_backtrace())
             else
-                Main.JuliaParser.Parser.display_diagnostic(STDERR, command, e)
+                display_diagnostic(STDERR, command, e)
             end
             REPL.println(STDERR); REPL.println(STDERR)
             return true
@@ -1289,8 +1290,8 @@ function RunDebugREPL(top_interp)
             show(finish!(einterp))
             println(); println()
         catch err
-            if isa(err, Parser.Diagnostic)
-                Main.JuliaParser.Parser.display_diagnostic(STDOUT, command, err)
+            if isa(err, Diagnostic)
+                display_diagnostic(STDOUT, command, err)
                 println(STDOUT)
                 LineEdit.reset_state(s)
                 return true
