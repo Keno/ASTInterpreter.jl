@@ -1375,5 +1375,7 @@ macro enter(arg)
 end
 
 include("lowering.jl")
+include("precompile.jl")
+_precompile_()
 
 end
