@@ -270,7 +270,7 @@ function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mod
                          return x
                      end
                  end,
-                 PreOrderDFS(ex))
+                 PreOrderDFS(ex,node->isa(node, Expr)))
         if wrap; ex = ex.args[1]; end
         println("About to run: ", ex)
     elseif interp.loctree === nothing
