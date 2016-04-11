@@ -1276,10 +1276,11 @@ function RunDebugREPL(top_interp)
         selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
         unusedsym = symbol("#unused#")
         env = get_env_for_eval(interp)
-        lnames = Any[interp.linfo.slotnames[2:end]..., interp.linfo.sparam_syms...]
+        linfo = get_linfo(interp)
+        lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
         map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
         f = Expr(:->,Expr(:tuple,lnames...), body)
-        lam = get_linfo(interp).module.eval(f)
+        lam = linfo.module.eval(f)
         linfo = first(methods(lam)).func
         # New interpreter is on detached stack
         loctree, code = process_loctree(res, command, linfo, false)
