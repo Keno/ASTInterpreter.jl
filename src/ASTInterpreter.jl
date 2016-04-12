@@ -842,7 +842,7 @@ function process_loctree(res, contents, linfo, complete = true)
         loctree = SourceNode(Tokens.normalize(reduce(⤄,PostOrderDFS(parsedloc))),loctree.children)
     end
 
-    loctree, contents    
+    loctree, contents
 end
 
 function reparse_meth(meth)
@@ -851,7 +851,11 @@ function reparse_meth(meth)
         file, line = Base.find_source_file(string(linfo.file)), linfo.line
     else
         linfo = meth.func.def
-        file, line = functionloc(meth)
+        file, line = try
+            functionloc(meth)
+        catch
+            nothing, 0
+        end
     end
     if file === nothing
         return nothing, ""
