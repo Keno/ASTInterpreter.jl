@@ -848,19 +848,22 @@ end
 function reparse_meth(meth)
     if isa(meth, LambdaInfo)
         linfo = meth.def.def
-        file, line = Base.find_source_file(string(linfo.file)), linfo.line
-    else
+   else
         linfo = meth.func.def
-        file, line = try
-            functionloc(meth)
-        catch
-            nothing, 0
-        end
     end
+    file, line = Base.find_source_file(string(linfo.file)), linfo.line
     if file === nothing
-        return nothing, ""
+        if startswith(string(linfo.file), "REPL[")
+            hist_idx = parse(Int,string(linfo.file)[6:end-1])
+            isdefined(Base, :active_repl) || return nothing, ""
+            hp = Base.active_repl.interface.modes[1].hist
+            contents = hp.history[hp.start_idx+hist_idx]
+        else
+            return nothing, ""
+        end
+    else
+        contents = open(readstring, file)
     end
-    contents = open(readstring, file)
     buf = IOBuffer(contents)
     for _ in line:-1:2
         readuntil(buf,'\n')
