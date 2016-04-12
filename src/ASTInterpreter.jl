@@ -1131,6 +1131,11 @@ function RunDebugREPL(top_interp)
         end
         if command == "si" || command == "s"
             first = true
+            if !can_step(interp)
+                print_with_color(:red, STDERR, "Can't step in this frame\n")
+                LineEdit.reset_state(s)
+                return true
+            end
             while true
                 expr = interp.next_expr[2]
                 if isa(expr, Expr)
@@ -1215,6 +1220,7 @@ function RunDebugREPL(top_interp)
         elseif command in ("ns","nc","n","se")
             if !can_step(interp)
                 print_with_color(:red, STDERR, "Can't step in this frame\n")
+                LineEdit.reset_state(s)
                 return true
             end
             (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
