@@ -1084,7 +1084,7 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     # New interpreter is on detached stack
     loctree = nothing
     if slbody != nothing
-        loctree, code = process_loctree(res, code, linfo, false)
+        loctree, code = process_loctree(slbody, code, linfo, false)
     end
     stmts = Base.uncompressed_ast(linfo)
     body = Expr(:body); body.args = stmts
