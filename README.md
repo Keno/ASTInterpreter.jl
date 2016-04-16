@@ -44,10 +44,8 @@ There is an experimental UI mode accessible by setting `ASTInterpreter.fancy_mod
 #### Current Dependencies
 
 ```julia
-Pkg.add("Reactive")
-Pkg.checkout("Reactive")
-Pkg.add("JuliaParser")
-Pkg.checkout("JuliaParser", "kf/loctrack") # If this complains, try Pkg.checkout("JuliaParser") first
+Pkg.clone("https://github.com/JuliaLang/Reactive.jl.git")
+Pkg.clone("https://github.com/JuliaLang/JuliaParser.jl.git")
 Pkg.clone("https://github.com/Keno/TerminalUI.jl.git")
 Pkg.clone("https://github.com/Keno/VT100.jl.git")
 Pkg.clone("https://github.com/Keno/AbstractTrees.jl.git")
