@@ -24,6 +24,8 @@ Basic Commands:
 - `finish` runs to the end of the function
 - `bt` shows a simple backtrace
 - ``` `stuff ``` runs `stuff` in the current frame's context
+- `fr v` will show all variables in the current frame
+- `f n` where `n` is an integer, will go to the `n`-th frame.
 
 Advanced commands:
 - `nc` steps to the next call

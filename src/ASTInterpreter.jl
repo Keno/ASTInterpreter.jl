@@ -1242,6 +1242,7 @@ function RunDebugREPL(top_interp)
             new_stack_idx = length(top_interp.stack)-level
             if new_stack_idx == 0
                 print_with_color(:red, STDERR, "Already at the top of the stack\n")
+                LineEdit.reset_state(s)
                 return true
             end
             level += 1
@@ -1250,10 +1251,28 @@ function RunDebugREPL(top_interp)
             new_stack_idx = length(top_interp.stack)-(level-2)
             if new_stack_idx > length(top_interp.stack)
                 print_with_color(:red, STDERR, "Already at the bottom of the stack\n")
+                LineEdit.reset_state(s)
                 return true
             end
             level -= 1
             interp = top_interp.stack[new_stack_idx]
+        elseif startswith(command, "f")
+            subcmds = split(command,' ')[2:end]
+            if isempty(subcmds) || subcmds[1] == "v"
+                print_frame(STDOUT, level, interp)
+                LineEdit.reset_state(s)
+                return true
+            else
+                new_level = parse(Int, subcmds[1])
+                new_stack_idx = length(top_interp.stack)-(new_level-1)
+                if new_stack_idx > length(top_interp.stack) || new_stack_idx < 1
+                    print_with_color(:red, STDERR, "Not a valid frame index\n")
+                    LineEdit.reset_state(s)
+                    return true
+                end
+                level = new_level
+                interp = top_interp.stack[new_stack_idx]
+            end
         elseif command in ("ns","nc","n","se")
             if !can_step(interp)
                 print_with_color(:red, STDERR, "Can't step in this frame\n")
