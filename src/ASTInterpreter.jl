@@ -106,8 +106,8 @@ function enter(linfo, tree::Expr, env, stack = Any[]; loctree = nothing, code = 
     interp
 end
 function enter(meth::Method, env::Environment, stack = Any[]; kwargs...)
-    linfo = meth.func
-    code = Base.uncompressed_ast(linfo.def)
+    linfo = meth.lambda_template
+    code = Base.uncompressed_ast(linfo)
     tree = Expr(:body); tree.args = code
     enter(linfo, tree, env, stack; kwargs...)
 end
@@ -847,14 +847,14 @@ end
 
 function reparse_meth(meth)
     if isa(meth, LambdaInfo)
-        linfo = meth.def.def
-   else
-        linfo = meth.func.def
+        meth = meth.def
+    elseif isa(meth, TypeMapEntry)
+        meth = meth.func
     end
-    file, line = Base.find_source_file(string(linfo.file)), linfo.line
+    file, line = Base.find_source_file(string(meth.file)), meth.line
     if file === nothing
-        if startswith(string(linfo.file), "REPL[")
-            hist_idx = parse(Int,string(linfo.file)[6:end-1])
+        if startswith(string(meth.file), "REPL[")
+            hist_idx = parse(Int,string(meth.file)[6:end-1])
             isdefined(Base, :active_repl) || return nothing, ""
             hp = Base.active_repl.interface.modes[1].hist
             contents = hp.history[hp.start_idx+hist_idx]
@@ -887,7 +887,7 @@ function reparse_meth(meth)
         end
         rethrow(err)
     end
-    process_loctree(res, contents, linfo)
+    process_loctree(res, contents, meth)
 end
 
 function prepare_locals(linfo, argvals = ())
@@ -933,13 +933,14 @@ function enter_call_expr(interp, expr)
         end
         argtypes = Tuple{_Typeof(f), argtypes.parameters...}
         args = allargs
-        env = prepare_locals(method.func, args)
+        env = prepare_locals(method.func.lambda_template, args)
         # Add static parameters to environment
         (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
                            argtypes, method.sig, method.tvars)::SimpleVector
         for i = 1:length(lenv)
             env.sparams[i] = lenv[i]
         end
+        isa(method, TypeMapEntry) && (method = method.func)
         loctree, code = reparse_meth(method)
         newinterp = enter(method,env,interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
         return newinterp
@@ -947,18 +948,19 @@ function enter_call_expr(interp, expr)
     nothing
 end
 
-function print_linfo_desc(io::IO, linfo)
+function print_linfo_desc(io::IO, linfo, specslottypes = false)
     argnames = linfo.slotnames[2:linfo.nargs]
-    spectypes = Any[Any for i=1:length(argnames)] #linfo.slottypes[2:end]
-    print(linfo.name,'(')
+    spectypes = specslottypes && (linfo.slottypes != nothing) ?
+        linfo.slottypes[2:linfo.nargs] : Any[Any for i=1:length(argnames)]
+    print(io, linfo.name,'(')
     first = true
     for (argname, argT) in zip(argnames, spectypes)
         first || print(io, ", ")
         first = false
-        print(argname)
-        !isa(argT, Any) && print("::", argT)
+        print(io, argname)
+        !is(argT, Any) && print(io, "::", argT)
     end
-    println(") at ",linfo.file,":",linfo.line)
+    print(io, ") at ",linfo.file,":",linfo.line)
 end
 
 function sym_visible(name)
