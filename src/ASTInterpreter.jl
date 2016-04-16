@@ -1071,6 +1071,31 @@ function process_exception!(interp::Interpreter, D::AbstractDiagnostic, istop)
     end
 end
 
+function eval_in_interp(interp, body, slbody = nothing, code = "")
+    selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
+    unusedsym = symbol("#unused#")
+    env = get_env_for_eval(interp)
+    linfo = get_linfo(interp)
+    lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
+    map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
+    f = Expr(:->,Expr(:tuple,lnames...), body)
+    lam = linfo.def.module.eval(f)
+    linfo = methods(lam).defs.func.lambda_template
+    # New interpreter is on detached stack
+    loctree = nothing
+    if slbody != nothing
+        loctree, code = process_loctree(res, code, linfo, false)
+    end
+    stmts = Base.uncompressed_ast(linfo)
+    body = Expr(:body); body.args = stmts
+    einterp = enter(linfo,body,env,Any[], loctree = loctree, code = code)
+    ok, val = try
+        true, finish!(einterp)
+    catch err
+        false, err
+    end
+end
+
 function RunDebugREPL(top_interp)
     level = 1
     prompt(level, name) = "$level|$name > "
@@ -1298,32 +1323,18 @@ function RunDebugREPL(top_interp)
             return true
         end
         body = Lexer.¬(res)
-        selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
-        unusedsym = symbol("#unused#")
-        env = get_env_for_eval(interp)
-        linfo = get_linfo(interp)
-        lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
-        map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
-        f = Expr(:->,Expr(:tuple,lnames...), body)
-        lam = linfo.module.eval(f)
-        linfo = first(methods(lam)).func
-        # New interpreter is on detached stack
-        loctree, code = process_loctree(res, command, linfo, false)
-        linfo = first(methods(lam)).func
-        stmts = Base.uncompressed_ast(linfo)
-        body = Expr(:body); body.args = stmts
-        einterp = enter(linfo,body,env,Any[], loctree = loctree, code = code)
-        try
-            show(finish!(einterp))
+        ok, result = eval_in_interp(interp, body, res, command)
+        if ok
+            show(result)
             println(); println()
-        catch err
-            if isa(err, AbstractDiagnostic)
-                display_diagnostic(STDOUT, command, err)
+        else
+            if isa(result, AbstractDiagnostic)
+                display_diagnostic(STDOUT, command, result)
                 println(STDOUT)
                 LineEdit.reset_state(s)
                 return true
             else
-                REPL.display_error(STDERR, err, Base.catch_backtrace())
+                REPL.display_error(STDERR, result, Base.catch_backtrace())
                 REPL.println(STDERR); REPL.println(STDERR)
                 # Convenience hack. We'll see if this is more useful or annoying
                 for c in all_commands
