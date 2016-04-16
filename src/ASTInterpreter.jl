@@ -105,7 +105,8 @@ function enter(linfo, tree::Expr, env, stack = Any[]; loctree = nothing, code = 
 
     interp
 end
-function enter(meth::Method, env::Environment, stack = Any[]; kwargs...)
+function enter(meth::Union{Method, TypeMapEntry}, env::Environment, stack = Any[]; kwargs...)
+    isa(meth, TypeMapEntry) && (meth = meth.func)
     linfo = meth.lambda_template
     code = Base.uncompressed_ast(linfo)
     tree = Expr(:body); tree.args = code
@@ -113,7 +114,7 @@ function enter(meth::Method, env::Environment, stack = Any[]; kwargs...)
 end
 function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
-        f = (linfo.module).(linfo.name)
+        f = (linfo.def.module).(linfo.def.name)
         meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
         return enter(meth, env, stack; kwargs...)
     end
@@ -191,7 +192,7 @@ function annotate_highlights!(x, highlights)
 end
 
 function determine_line(interp, highlight)
-    line = interp.linfo.line
+    line = interp.linfo.def.line
     # Find a line number node previous to this expression
     if highlight !== nothing && !isempty(highlight)
         exprtree = interp.shadowtree.tree.x
@@ -211,7 +212,7 @@ end
 
 function print_sourcecode(linfo, code, line; file = SourceFile(code))
     startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
-        max(1,linfo.line-1), line+3; file=file)
+        max(1,linfo.def.line-1), line+3; file=file)
 
     # Compute necessary data for line numbering
     startline = compute_line(file, startoffset)
@@ -952,7 +953,7 @@ function print_linfo_desc(io::IO, linfo, specslottypes = false)
     argnames = linfo.slotnames[2:linfo.nargs]
     spectypes = specslottypes && (linfo.slottypes != nothing) ?
         linfo.slottypes[2:linfo.nargs] : Any[Any for i=1:length(argnames)]
-    print(io, linfo.name,'(')
+    print(io, linfo.def.name,'(')
     first = true
     for (argname, argT) in zip(argnames, spectypes)
         first || print(io, ", ")
@@ -960,7 +961,7 @@ function print_linfo_desc(io::IO, linfo, specslottypes = false)
         print(io, argname)
         !is(argT, Any) && print(io, "::", argT)
     end
-    print(io, ") at ",linfo.file,":",linfo.line)
+    print(io, ") at ",linfo.def.file,":",linfo.def.line)
 end
 
 function sym_visible(name)
@@ -1010,6 +1011,7 @@ end
 function print_frame(io::IO, num, interp::Interpreter)
     print(io, "[$num] ")
     print_linfo_desc(io, interp.linfo)
+    println(io)
     print_locals(io, interp.linfo, interp.env,
         (io,name)->println(io, "<undefined>"))
 end
