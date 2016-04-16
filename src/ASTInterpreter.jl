@@ -649,6 +649,14 @@ function next_line!(interp)
         next_until!(call_or_assignment, interp)
 end
 
+function advance_to_line(interp, line)
+    while true
+        at_line = determine_line(interp, interp.next_expr[1])
+        at_line == line && break
+        next_line!(interp) || break
+    end
+end
+
 function _evaluated!(interp, ret)
     ind, node = interp.next_expr
     interp.shadowtree[ind] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
