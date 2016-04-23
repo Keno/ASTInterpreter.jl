@@ -256,7 +256,8 @@ end
 
 global fancy_mode = false
 
-function print_status(interp, highlight = interp.next_expr[1]; fancy = fancy_mode)
+print_status(_::Void, args...) = nothing
+function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
         print_sourcecode(interp.linfo, interp.code, determine_line(interp, highlight))
         ex = interp.shadowtree[highlight].tree.x
@@ -1030,9 +1031,11 @@ include(joinpath(dirname(@__FILE__),"..","..","JuliaParser","src","interactiveut
 get_env_for_eval(interp::Interpreter) = interp.env
 get_linfo(interp::Interpreter) = interp.linfo
 
-function unknown_command(interp::Interpreter, command)
+function execute_command(interp, command)
     print_with_color(:red,"\nUnknown command!\n");
 end
+
+execute_command(state, interp, cmd1, command) = (execute_command(interp, command); return false)
 
 function finish_until!(top_interp, interp)
     while true
@@ -1096,14 +1099,166 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     end
 end
 
+type InterpreterState
+    top_interp
+    interp
+    level
+    s
+end
+
+# Command Implementation
+function done_stepping(state, interp; to_next_call = false)
+    s = state.s
+    stack = state.interp.stack
+    this_idx = findfirst(stack, interp)
+    if this_idx == 0
+        LineEdit.transition(s, :abort)
+        interp = nothing
+    else
+        oldinterp = state.interp
+        state.interp = this_idx == 1 ? nothing : stack[this_idx-1]
+        resize!(stack, this_idx-1)
+        if !isa(state.interp, Interpreter)
+            LineEdit.transition(s, :abort)
+            return nothing
+        end
+        evaluated!(state.interp, oldinterp.retval)
+        to_next_call &&
+          (isexpr(state.interp.next_expr[2], :call) || next_call!(state.interp))
+        print_status(state.interp, state.interp.next_expr[1])
+        println()
+    end
+    interp
+end
+
+function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
+    finish!(state.interp)
+    state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = true)
+end
+
+function execute_command(state, interp, ::Val{:bt}, cmd)
+    print_backtrace(state.top_interp)
+    println()
+    return false
+end
+
+function execute_command(state, interp::Interpreter, ::Val{:shadow}, cmd)
+    print_shadowtree(interp, interp.next_expr[1])
+    println()
+    return false
+end
+
+function execute_command(state, interp, ::Val{:linfo}, cmd)
+    eval(Main,:(linfo = $(get_linfo(interp))))
+    LineEdit.transition(state.s, :abort)
+    return false
+end
+
+function execute_command(state, interp::Interpreter, ::Val{:ind}, cmd)
+    println("About to execute index ", interp.next_expr[1])
+    return false
+end
+    
+function execute_command(state, interp::Interpreter, ::Val{:loc}, cmd)
+    if interp.loctree == nothing
+        print_with_color(:red, STDERR, "No loctree available\n")
+        return true
+    end
+    w = create_widget(state.interp.loctree, state.interp.code)
+    TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
+        Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
+        ))
+    return false
+end
+
+function execute_command(state, interp, ::Val{:up}, cmd)
+    new_stack_idx = length(state.top_interp.stack)-state.level
+    if new_stack_idx == 0
+        print_with_color(:red, STDERR, "Already at the top of the stack\n")
+        return false
+    end
+    state.level += 1
+    state.interp = state.top_interp.stack[new_stack_idx]
+    return true
+end
+
+function execute_command(state, interp, ::Val{:down}, cmd)
+    new_stack_idx = length(state.top_interp.stack)-(state.level-2)
+    if new_stack_idx > length(state.top_interp.stack)
+        print_with_color(:red, STDERR, "Already at the bottom of the stack\n")
+        return false
+    end
+    state.level -= 1
+    state.interp = state.top_interp.stack[new_stack_idx]
+    return true
+end
+
+function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
+    subcmds = split(command,' ')[2:end]
+    if isempty(subcmds) || subcmds[1] == "v"
+        print_frame(STDOUT, state.level, state.interp)
+        return false
+    else
+        new_level = parse(Int, subcmds[1])
+        new_stack_idx = length(state.top_interp.stack)-(new_level-1)
+        if new_stack_idx > length(state.top_interp.stack) || new_stack_idx < 1
+            print_with_color(:red, STDERR, "Not a valid frame index\n")
+            return false
+        end
+        state.level = new_level
+        state.interp = state.top_interp.stack[new_stack_idx]
+    end
+    return true
+end
+
+function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:se}}, command)
+    first = true
+    while true
+        expr = state.interp.next_expr[2]
+        if isa(expr, Expr)
+            if expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
+                x = enter_call_expr(state.interp, expr)
+                if x !== nothing
+                    state.interp = state.top_interp = x
+                    return true
+                end
+            elseif !first && isexpr(expr, :return)
+                # As a special case, do not step through a return
+                # statement, unless the user was already there when they
+                # hit `s`
+                return true
+            end
+        end
+        first = false
+        command == "si" && break
+        if !step_expr(state.interp)
+            state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = true)
+            return true
+        end
+    end
+    execute_command(state, interp, Val{:se}(), "se")
+end
+
+function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},Val{:n},Val{:se}}, command)
+    (state.top_interp != interp) && (state.top_interp = finish_until!(state.top_interp, interp))
+    state.level = 1
+    if command == "ns" ? !next_statement!(state.interp) :
+       command == "nc" ? !next_call!(state.interp) :
+       command == "n" ? !next_line!(state.interp) :
+        !step_expr(state.interp) #= command == "se" =#
+        state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = command == "n")
+    end
+    return true
+end
+
 function RunDebugREPL(top_interp)
-    level = 1
     prompt(level, name) = "$level|$name > "
 
     repl = Base.active_repl
+    state = InterpreterState(top_interp, top_interp, 1, nothing)
 
     # Setup debug panel
-    panel = LineEdit.Prompt(prompt(level, "debug");
+    panel = LineEdit.Prompt(prompt(state.level, "debug");
         prompt_prefix="\e[38;5;166m",
         prompt_suffix=Base.text_colors[:white],
         on_enter = s->true)
@@ -1112,7 +1267,7 @@ function RunDebugREPL(top_interp)
     replc = Base.REPL.REPLCompletionProvider(repl)
 
     # Set up the main Julia prompt
-    julia_prompt = LineEdit.Prompt(prompt(level, "julia");
+    julia_prompt = LineEdit.Prompt(prompt(state.level, "julia");
         # Copy colors from the prompt object
         prompt_prefix = repl.prompt_color,
         prompt_suffix = (repl.envcolors ? Base.input_color : repl.input_color),
@@ -1128,34 +1283,12 @@ function RunDebugREPL(top_interp)
     search_prompt.complete = Base.REPL.LatexCompletions()
 
 
-    function done_stepping(s, interp; to_next_call = false)
-        stack = interp.stack
-        this_idx = findfirst(stack, interp)
-        if this_idx == 0
-            LineEdit.transition(s, :abort)
-            interp = nothing
-        else
-            oldinterp = interp
-            interp = this_idx == 1 ? nothing : stack[this_idx-1]
-            resize!(stack, this_idx-1)
-            if !isa(interp, Interpreter)
-                LineEdit.transition(s, :abort)
-                return nothing
-            end
-            evaluated!(interp, oldinterp.retval)
-            to_next_call &&
-              (isexpr(interp.next_expr[2], :call) || next_call!(interp))
-            print_status(interp, interp.next_expr[1])
-            println()
-        end
-        interp
-    end
-
-    interp = top_interp
+    state.interp = top_interp
 
     panel.on_done = (s,buf,ok)->begin
+        state.s = s
         line = takebuf_string(buf)
-        old_level = level
+        old_level = state.level
         if !ok || strip(line) == "q"
             LineEdit.transition(s, :abort)
             LineEdit.reset_state(s)
@@ -1166,155 +1299,36 @@ function RunDebugREPL(top_interp)
         else
             command = strip(line)
         end
-        if command == "si" || command == "s"
-            first = true
-            if !can_step(interp)
-                print_with_color(:red, STDERR, "Can't step in this frame\n")
-                LineEdit.reset_state(s)
-                return true
-            end
-            while true
-                expr = interp.next_expr[2]
-                if isa(expr, Expr)
-                    if expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
-                        x = enter_call_expr(interp, expr)
-                        if x !== nothing
-                            interp = top_interp = x
-                            print_status(interp, interp.next_expr[1])
-                            LineEdit.reset_state(s)
-                            return true
-                        end
-                    elseif !first && isexpr(expr, :return)
-                        # As a special case, do not step through a return
-                        # statement, unless the user was already there when they
-                        # hit `s`
-                        print_status(interp, interp.next_expr[1])
-                        LineEdit.reset_state(s)
-                        return true
-                    end
-                end
-                first = false
-                command == "si" && break
-                if !step_expr(interp)
-                    interp = top_interp = done_stepping(s, interp; to_next_call = true)
-                    LineEdit.reset_state(s)
-                    return true
+        do_print_status = true
+        cmd1 = split(command,' ')[1]
+        do_print_status = try
+            execute_command(state, state.interp, Val{symbol(cmd1)}(), command)
+        catch err
+            isa(err, AbstractDiagnostic) || rethrow(err)
+            caught = false
+            for interp_idx in length(state.top_interp.stack):-1:1
+                if process_exception!(state.top_interp.stack[interp_idx], err, interp_idx == length(top_interp.stack))
+                    interp = state.top_interp = state.top_interp.stack[interp_idx]
+                    resize!(state.top_interp.stack, interp_idx)
+                    caught = true
+                    break
                 end
             end
-            command = "se"
-        elseif command == "finish"
-            finish!(interp)
-            interp = top_interp = done_stepping(s, interp; to_next_call = true)
+            !caught && rethrow(err)
+            display_diagnostic(STDERR, state.interp.code, err)
+            println(STDERR)
             LineEdit.reset_state(s)
             return true
         end
-        if command == "bt"
-            print_backtrace(top_interp)
-            println()
-            LineEdit.reset_state(s)
-            return true
-        elseif command == "shadow"
-            print_shadowtree(interp.shadowtree, interp.next_expr[1])
-            println()
-            LineEdit.reset_state(s)
-            return true
-        elseif command == "linfo"
-            eval(Main,:(linfo = $(get_linfo(interp))))
-            LineEdit.transition(s, :abort)
-            LineEdit.reset_state(s)
-            return true
-        elseif command == "ind"
-            println("About to execute index", interp.next_expr[1])
-            LineEdit.reset_state(s)
-            return true
-        elseif command == "loc"
-            if interp.loctree == nothing
-                print_with_color(:red, STDERR, "No loctree available\n")
-                return true
-            end
-            w = create_widget(interp.loctree,interp.code)
-            TerminalUI.print_snapshot(TerminalUI.InlineDialog(w,
-                Base.Terminals.TTYTerminal("xterm", STDIN, STDOUT, STDERR)
-                ))
-            LineEdit.reset_state(s)
-            return true
-        elseif command == "up"
-            new_stack_idx = length(top_interp.stack)-level
-            if new_stack_idx == 0
-                print_with_color(:red, STDERR, "Already at the top of the stack\n")
-                LineEdit.reset_state(s)
-                return true
-            end
-            level += 1
-            interp = top_interp.stack[new_stack_idx]
-        elseif command == "down"
-            new_stack_idx = length(top_interp.stack)-(level-2)
-            if new_stack_idx > length(top_interp.stack)
-                print_with_color(:red, STDERR, "Already at the bottom of the stack\n")
-                LineEdit.reset_state(s)
-                return true
-            end
-            level -= 1
-            interp = top_interp.stack[new_stack_idx]
-        elseif startswith(command, "f")
-            subcmds = split(command,' ')[2:end]
-            if isempty(subcmds) || subcmds[1] == "v"
-                print_frame(STDOUT, level, interp)
-                LineEdit.reset_state(s)
-                return true
-            else
-                new_level = parse(Int, subcmds[1])
-                new_stack_idx = length(top_interp.stack)-(new_level-1)
-                if new_stack_idx > length(top_interp.stack) || new_stack_idx < 1
-                    print_with_color(:red, STDERR, "Not a valid frame index\n")
-                    LineEdit.reset_state(s)
-                    return true
-                end
-                level = new_level
-                interp = top_interp.stack[new_stack_idx]
-            end
-        elseif command in ("ns","nc","n","se")
-            if !can_step(interp)
-                print_with_color(:red, STDERR, "Can't step in this frame\n")
-                LineEdit.reset_state(s)
-                return true
-            end
-            (top_interp != interp) && (top_interp = finish_until!(top_interp, interp))
-            level = 1
-            try
-                if command == "ns" ? !next_statement!(interp) :
-                   command == "nc" ? !next_call!(interp) :
-                   command == "n" ? !next_line!(interp) :
-                    !step_expr(interp) #= command == "se" =#
-                    interp = top_interp = done_stepping(s, interp; to_next_call = command == "n")
-                    LineEdit.reset_state(s)
-                    return true
-                end
-            catch err
-                isa(err, AbstractDiagnostic) || rethrow(err)
-                caught = false
-                for interp_idx in length(top_interp.stack):-1:1
-                    if process_exception!(top_interp.stack[interp_idx], err, interp_idx == length(top_interp.stack))
-                        interp = top_interp = top_interp.stack[interp_idx]
-                        resize!(top_interp.stack, interp_idx)
-                        caught = true
-                        break
-                    end
-                end
-                !caught && rethrow(err)
-                display_diagnostic(STDERR, interp.code, err)
-                println(STDERR)
-            end
-        else
-            unknown_command(interp, command)
-        end
-        if old_level != level
-            panel.prompt = prompt(level,"debug")
-            julia_prompt.prompt = prompt(level,"julia")
+        if old_level != state.level
+            panel.prompt = prompt(state.level,"debug")
+            julia_prompt.prompt = prompt(state.level,"julia")
         end
         LineEdit.reset_state(s)
-        print_status(interp)
-        println()
+        if do_print_status
+            print_status(state.interp)
+            println()
+        end
         return true
     end
 
@@ -1342,7 +1356,7 @@ function RunDebugREPL(top_interp)
             return true
         end
         body = Lexer.¬(res)
-        ok, result = eval_in_interp(interp, body, res, command)
+        ok, result = eval_in_interp(state.interp, body, res, command)
         if ok
             show(result)
             println(); println()
@@ -1386,8 +1400,8 @@ function RunDebugREPL(top_interp)
     julia_prompt.keymap_dict = LineEdit.keymap([Base.REPL.mode_keymap(panel);b])
 
     # Skip evaluated values (e.g. constants)
-    done!(interp)
-    print_status(interp)
+    done!(state.interp)
+    print_status(state.interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
