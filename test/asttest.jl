@@ -37,7 +37,7 @@ function LoopTest()
     x
 end
 
-interp = enter(LoopTest, Environment())
+interp = ASTInterpreter.enter_call_expr(nothing,:($(LoopTest)()))
 @test ASTInterpreter.finish!(interp; print_step = false, recursive=true) == LoopTest()
 
 # Test Loops
@@ -53,7 +53,7 @@ function ContinueTest()
     x
 end
 
-interp = enter(ContinueTest, Environment())
+interp = ASTInterpreter.enter_call_expr(nothing,:($(ContinueTest)()))
 @test ASTInterpreter.finish!(interp; print_step = false, recursive=true) == ContinueTest()
 
 #foo() = 1+1
@@ -63,5 +63,5 @@ function foo(n)
 end
 
 
-interp = enter(foo, Environment(Dict(:n => 20),Dict{Symbol,Any}()))
+interp = ASTInterpreter.enter_call_expr(nothing,:($(foo)(20)))
 #@test ASTInterpreter.finish!(interp; print_step = false, recursive=true) == foo(20)

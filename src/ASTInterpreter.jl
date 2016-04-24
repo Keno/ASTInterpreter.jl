@@ -48,6 +48,7 @@ immutable Environment
     gensyms::Vector{Any}
     sparams::Vector{Any}
 end
+Environment() = Environment(Vector{Nullable{Any}}(), Any[], Any[])
 
 Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.gensyms), copy(e.sparams))
 
@@ -122,7 +123,7 @@ function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     tree = Expr(:body); tree.args = code
     enter(linfo, tree, env, stack; kwargs...)
 end
-enter(f::Function, env) = enter(first(methods(f)), env)
+enter(f::Function, env) = enter(methods(f).defs, env)
 
 function print_shadowtree(shadowtree, highlight = nothing, inds = nothing)
     from = nothing
@@ -907,12 +908,9 @@ function prepare_locals(linfo, argvals = ())
     ng = isa(linfo.gensymtypes, Int) ? linfo.gensymtypes : length(linfo.gensymtypes)
     gensyms = Array(Any, ng)
     sparams = Array(Any, length(linfo.sparam_syms))
-    if argvals != () && length(argvals) < length(argnames) # Empty Vararg
-        locals[linfo.nargs] = ()
-    end
     for i = 1:linfo.nargs
         if linfo.isva && i == length(argnames)
-            locals[i] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}()
+            locals[i] = length(argvals) >= i ? tuple(argvals[i:end]...) : Nullable{Any}(())
             break
         end
         locals[i] = length(argvals) >= i ? Nullable{Any}(argvals[i]) : Nullable{Any}()
@@ -1125,15 +1123,14 @@ function done_stepping!(state, interp; to_next_call = false)
         evaluated!(state.interp, oldinterp.retval)
         to_next_call &&
           (isexpr(state.interp.next_expr[2], :call) || next_call!(state.interp))
-        print_status(state.interp, state.interp.next_expr[1])
-        println()
     end
     interp
 end
 
 function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
     finish!(state.interp)
-    state.interp = state.top_interp = done_stepping!(state, state.interp; to_next_call = true)
+    done_stepping!(state, state.interp; to_next_call = true)
+    return true
 end
 
 function execute_command(state, interp, ::Val{:bt}, cmd)
@@ -1234,7 +1231,7 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si}}, 
         command == "si" && break
         if !step_expr(state.interp)
             done_stepping!(state, state.top_interp; to_next_call = true)
-            return false
+            return true
         end
     end
     execute_command(state, interp, Val{:se}(), "se")
@@ -1248,7 +1245,7 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},V
        command == "n" ? !next_line!(state.interp) :
         !step_expr(state.interp) #= command == "se" =#
         done_stepping!(state, state.interp; to_next_call = command == "n")
-        return false
+        return true
     end
     return true
 end

@@ -2,4 +2,5 @@ using ASTInterpreter
 using Base.Test
 
 # write your own tests here
-@test 1 == 1
+include("asttest.jl")
+include("stepping.jl")
