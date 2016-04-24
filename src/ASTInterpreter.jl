@@ -1211,7 +1211,7 @@ function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
     return true
 end
 
-function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:se}}, command)
+function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si}}, command)
     first = true
     while true
         expr = state.interp.next_expr[2]
