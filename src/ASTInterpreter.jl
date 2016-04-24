@@ -1107,7 +1107,7 @@ type InterpreterState
 end
 
 # Command Implementation
-function done_stepping(state, interp; to_next_call = false)
+function done_stepping!(state, interp; to_next_call = false)
     s = state.s
     stack = state.interp.stack
     this_idx = findfirst(stack, interp)
@@ -1116,7 +1116,7 @@ function done_stepping(state, interp; to_next_call = false)
         interp = nothing
     else
         oldinterp = state.interp
-        state.interp = this_idx == 1 ? nothing : stack[this_idx-1]
+        state.top_interp = state.interp = this_idx == 1 ? nothing : stack[this_idx-1]
         resize!(stack, this_idx-1)
         if !isa(state.interp, Interpreter)
             LineEdit.transition(s, :abort)
@@ -1133,7 +1133,7 @@ end
 
 function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
     finish!(state.interp)
-    state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = true)
+    state.interp = state.top_interp = done_stepping!(state, state.interp; to_next_call = true)
 end
 
 function execute_command(state, interp, ::Val{:bt}, cmd)
@@ -1158,7 +1158,7 @@ function execute_command(state, interp::Interpreter, ::Val{:ind}, cmd)
     println("About to execute index ", interp.next_expr[1])
     return false
 end
-    
+
 function execute_command(state, interp::Interpreter, ::Val{:loc}, cmd)
     if interp.loctree == nothing
         print_with_color(:red, STDERR, "No loctree available\n")
@@ -1217,9 +1217,10 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si}}, 
         expr = state.interp.next_expr[2]
         if isa(expr, Expr)
             if expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
-                x = enter_call_expr(state.interp, expr)
+                x = enter_call_expr(state.top_interp, expr)
                 if x !== nothing
                     state.interp = state.top_interp = x
+                    command == "s" && next_call!(x)
                     return true
                 end
             elseif !first && isexpr(expr, :return)
@@ -1232,8 +1233,8 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si}}, 
         first = false
         command == "si" && break
         if !step_expr(state.interp)
-            state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = true)
-            return true
+            done_stepping!(state, state.top_interp; to_next_call = true)
+            return false
         end
     end
     execute_command(state, interp, Val{:se}(), "se")
@@ -1246,7 +1247,8 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},V
        command == "nc" ? !next_call!(state.interp) :
        command == "n" ? !next_line!(state.interp) :
         !step_expr(state.interp) #= command == "se" =#
-        state.interp = state.top_interp = done_stepping(state, state.interp; to_next_call = command == "n")
+        done_stepping!(state, state.interp; to_next_call = command == "n")
+        return false
     end
     return true
 end
