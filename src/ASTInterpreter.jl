@@ -228,8 +228,11 @@ function print_sourcecode(linfo, code, line; file = SourceFile(code))
         pop!(code)
     end
 
+    print_with_color(:bold, STDOUT,
+        string("In ", linfo.def.file,":",linfo.def.line, "\n"))
+
     for textline in code
-        print_with_color(lineno == current_line ? :yellow : :white,
+        print_with_color(lineno == current_line ? :yellow : :bold,
             string(lineno, " "^(stoplinelength-length(lineno)+1)))
         println(textline)
         lineno += 1
@@ -779,7 +782,7 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
         elseif isexpr(node, :(=))
             if isempty(theassignments)
                 println("Failed to match $node")
-                return    
+                return
             end
             println("Matching assignment $node with $(shift!(theassignments))")
         end
@@ -828,7 +831,7 @@ function process_loctree(res, contents, linfo, complete = true)
             end
         end
     catch err
-        if isa(err, MatchingError) 
+        if isa(err, MatchingError)
             expression_mismatch(loweredast, parsedexpr, collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)...)
         elseif fancy_mode
             rethrow(err)
