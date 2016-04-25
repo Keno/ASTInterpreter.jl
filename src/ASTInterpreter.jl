@@ -1438,6 +1438,7 @@ function finish!(interp::Interpreter; print_step::Bool = false, recursive = fals
 end
 
 macro enter(arg)
+    arg = ASTInterpreter.lower!(arg)
     @assert isa(arg, Expr) && arg.head == :call
     quote
         theargs = $(esc(Expr(:tuple,arg.args...)))
