@@ -925,7 +925,7 @@ function prepare_locals(linfo, argvals = ())
     Environment(locals, gensyms, sparams)
 end
 
-function enter_call_expr(interp, expr)
+function enter_call_expr(interp, expr, showlocation::Bool=false)
     f = to_function(expr.args[1])
     allargs = expr.args
     if is(f,Base._apply)
@@ -941,6 +941,9 @@ function enter_call_expr(interp, expr)
             println(f)
             println(argtypes)
             rethrow(err)
+        end
+        if showlocation
+            println(method.func.file, ':', method.func.line)
         end
         argtypes = Tuple{_Typeof(f), argtypes.parameters...}
         args = allargs
@@ -1442,7 +1445,7 @@ macro enter(arg)
     quote
         theargs = $(esc(Expr(:tuple,arg.args...)))
         ASTInterpreter.RunDebugREPL(
-            ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...)))
+            ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...),true))
     end
 end
 
