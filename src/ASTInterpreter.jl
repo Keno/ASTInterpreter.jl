@@ -172,6 +172,11 @@ function sequence!(s::SRLoc, ind)
     s
 end
 
+immutable Suppressed{T}
+    item::T
+end
+Base.show(io::IO, x::Suppressed) = print(io, "<suppressed ", x.item, '>')
+
 immutable Coloring
     x
     color::Symbol
@@ -272,6 +277,8 @@ function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fanc
                      if isa(x, Slot)
                          name = interp.linfo.slotnames[x.id]
                          return sym_visible(name) ? name : x
+                     elseif isa(x, AbstractArray)
+                         return length(x) <= 10 ? x : Suppressed(summary(x))
                      else
                          return x
                      end
