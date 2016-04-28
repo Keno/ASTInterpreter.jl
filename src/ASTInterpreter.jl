@@ -866,6 +866,17 @@ function process_loctree(res, contents, linfo, complete = true)
     loctree, contents
 end
 
+function readfileorhist(file)
+    if startswith(file,"REPL[")
+        hist_idx = parse(Int,string(file)[6:end-1])
+        isdefined(Base, :active_repl) || return nothing, ""
+        hp = Base.active_repl.interface.modes[1].hist
+        contents = hp.history[hp.start_idx+hist_idx]
+    else
+        open(readstring, file)
+    end
+end
+
 function reparse_meth(meth)
     if isa(meth, LambdaInfo)
         meth = meth.def
@@ -873,18 +884,8 @@ function reparse_meth(meth)
         meth = meth.func
     end
     file, line = Base.find_source_file(string(meth.file)), meth.line
-    if file === nothing
-        if startswith(string(meth.file), "REPL[")
-            hist_idx = parse(Int,string(meth.file)[6:end-1])
-            isdefined(Base, :active_repl) || return nothing, ""
-            hp = Base.active_repl.interface.modes[1].hist
-            contents = hp.history[hp.start_idx+hist_idx]
-        else
-            return nothing, ""
-        end
-    else
-        contents = open(readstring, file)
-    end
+    contents = readfileorhist(file == nothing ? meth.file : file)
+    contents == nothing && return (nothing, "")
     buf = IOBuffer(contents)
     for _ in line:-1:2
         readuntil(buf,'\n')
