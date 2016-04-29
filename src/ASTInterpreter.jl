@@ -47,10 +47,13 @@ immutable Environment
     locals::Vector{Nullable{Any}}
     gensyms::Vector{Any}
     sparams::Vector{Any}
+    # A vector from names to the slotnumber of that name
+    # for which a reference was last encountered.
+    last_reference::Dict{Symbol, Int}
 end
-Environment() = Environment(Vector{Nullable{Any}}(), Any[], Any[])
+Environment() = Environment(Vector{Nullable{Any}}(), Any[], Any[], Dict{Symbol, Int}())
 
-Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.gensyms), copy(e.sparams))
+Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.gensyms), copy(e.sparams), copy(e.last_reference))
 
 type Interpreter
     stack::Vector{Any}
@@ -507,6 +510,7 @@ function _step_expr(interp)
             else
                 nslots = length(interp.env.locals)
                 id = node.id
+                interp.env.last_reference[interp.linfo.slotnames[id]] = id
                 if id > nslots
                     # hack: static parameters placed at end of locals for interactive exprs
                     ret = interp.env.sparams[id - nslots]
@@ -527,6 +531,8 @@ function _step_expr(interp)
                     interp.env.gensyms[lhs.id+1] = rhs
                 elseif isa(lhs, Slot)
                     interp.env.locals[lhs.id] = Nullable{Any}(rhs)
+                    interp.env.last_reference[interp.linfo.slotnames[lhs.id]] =
+                        lhs.id
                 elseif isa(lhs, GlobalRef)
                     eval(:($lhs = $(QuoteNode(rhs))))
                 end
@@ -945,7 +951,7 @@ function prepare_locals(linfo, argvals = ())
     for i = (linfo.nargs+1):length(linfo.slotnames)
         locals[i] = Nullable{Any}()
     end
-    Environment(locals, gensyms, sparams)
+    Environment(locals, gensyms, sparams, Dict{Symbol,Int}())
 end
 
 function enter_call_expr(interp, expr; enter_generated = false)
@@ -1130,6 +1136,7 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     linfo = get_linfo(interp)
     lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
     map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
+    lnames = unique(lnames)
     f = Expr(:->,Expr(:tuple,lnames...), body)
     lam = linfo.def.module.eval(f)
     linfo = methods(lam).defs.func.lambda_template
@@ -1138,14 +1145,34 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     if slbody != nothing
         loctree, code = process_loctree(slbody, code, linfo, false)
     end
+    # Construct a new environment with the arguments inserted
+    eval_env = ASTInterpreter.prepare_locals(linfo)
+    for varname in lnames
+        lidx = findfirst(linfo.slotnames, varname)
+        lidx == 0 && continue
+        if haskey(env.last_reference, varname)
+            eval_env.locals[lidx] = env.locals[env.last_reference[varname]]
+        else
+            oldidx = findfirst(interp.linfo.slotnames, varname)
+            if oldidx == 0
+                sparamidx = findfirst(interp.linfo.sparam_syms, varname)
+                sparamidx == 0 && continue
+                eval_env.locals[lidx] = env.sparams[sparamidx]
+            else
+                eval_env.locals[lidx] = env.locals[oldidx]
+            end
+        end
+    end
     stmts = Base.uncompressed_ast(linfo)
     body = Expr(:body); body.args = stmts
-    einterp = enter(linfo,body,env,Any[], loctree = loctree, code = code)
+    einterp = enter(linfo,body,eval_env,Any[], loctree = loctree, code = code)
     ok, val = try
         true, finish!(einterp)
     catch err
         false, err
     end
+    # Here we would reapply the variables
+    ok, val
 end
 
 type InterpreterState
@@ -1208,7 +1235,7 @@ function execute_command(state, interp, ::Val{:bt}, cmd)
 end
 
 function execute_command(state, interp::Interpreter, ::Val{:shadow}, cmd)
-    print_shadowtree(interp, interp.next_expr[1])
+    print_shadowtree(interp.shadowtree, interp.next_expr[1])
     println()
     return false
 end
@@ -1318,6 +1345,25 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},V
     return true
 end
 
+function eval_code(state, command)
+    res = try
+        ts = Lexer.TokenStream{Lexer.SourceLocToken}(command)
+        ts.filename = "REPL"
+        res = Main.JuliaParser.Parser.parse(ts)
+    catch e
+        if !isa(e, AbstractDiagnostic)
+            REPL.display_error(STDERR, err, Base.catch_backtrace())
+        else
+            display_diagnostic(STDERR, command, e)
+        end
+        REPL.println(STDERR); REPL.println(STDERR)
+        return true
+    end
+    body = Lexer.¬(res)
+    ok, result = eval_in_interp(state.interp, body, res, command)
+end
+eval_code(state, buf::IOBuffer) = eval_code(state, takebuf_string(buf))
+
 function RunDebugREPL(top_interp)
     prompt(level, name) = "$level|$name > "
 
@@ -1408,28 +1454,13 @@ function RunDebugREPL(top_interp)
             return false
         end
         xbuf = copy(buf)
-        command = strip(takebuf_string(buf))
-        res = try
-            ts = Lexer.TokenStream{Lexer.SourceLocToken}(command)
-            ts.filename = "REPL"
-            res = Main.JuliaParser.Parser.parse(ts)
-        catch e
-            if !isa(e, AbstractDiagnostic)
-                REPL.display_error(STDERR, err, Base.catch_backtrace())
-            else
-                display_diagnostic(STDERR, command, e)
-            end
-            REPL.println(STDERR); REPL.println(STDERR)
-            return true
-        end
-        body = Lexer.¬(res)
-        ok, result = eval_in_interp(state.interp, body, res, command)
+        ok, result = eval_code(state, buf)
         if ok
             show(result)
             println(); println()
         else
             if isa(result, AbstractDiagnostic)
-                display_diagnostic(STDOUT, command, result)
+                display_diagnostic(STDOUT, takebuf_string(xbuf), result)
                 println(STDOUT)
                 LineEdit.reset_state(s)
                 return true
