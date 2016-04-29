@@ -56,6 +56,7 @@ type Interpreter
     stack::Vector{Any}
     env::Environment
     linfo::LambdaInfo
+    evaluating_staged::Bool
     ast::Any
     it::Any
     cur_state::Any
@@ -92,10 +93,11 @@ function make_shadowtree(tree)
     shadowtree, it
 end
 
-function enter(linfo, tree::Expr, env, stack = Any[]; loctree = nothing, code = "")
+function enter(linfo, tree::Expr, env, stack = Any[];
+        loctree = nothing, code = "", evaluating_staged = false)
     shadowtree, it = make_shadowtree(tree)
 
-    interp = Interpreter(stack, env, linfo, tree, it,
+    interp = Interpreter(stack, env, linfo, evaluating_staged, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}())
     push!(stack, interp)
     ind, node = next_expr!(interp)
@@ -279,6 +281,8 @@ function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fanc
                          return sym_visible(name) ? name : x
                      elseif isa(x, AbstractArray)
                          return length(x) <= 10 ? x : Suppressed(summary(x))
+                     elseif isa(x, LambdaInfo)
+                         return Suppressed("generated thunk")
                      else
                          return x
                      end
@@ -552,6 +556,8 @@ function _step_expr(interp)
                         end
                     end
                     ret = eval(node)
+                elseif isa(f, LambdaInfo)
+                    ret = finish!(enter_call_expr(interp, node))
                 else
                     # Don't go through eval since this may have unqouted, symbols and
                     # exprs
@@ -669,11 +675,19 @@ function advance_to_line(interp, line)
     end
 end
 
-function _evaluated!(interp, ret)
-    ind, node = interp.next_expr
-    interp.shadowtree[ind] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
+function _evaluated!(interp, ret, wasstaged = false)
+    if wasstaged
+        # If this is the result of a staged function, we replace the argument
+        # the call rather than the call itself
+        ind, node = interp.next_expr
+        @assert isexpr(node, :call)
+        interp.shadowtree[[ind; 1]] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
+    else
+        ind, node = interp.next_expr
+        interp.shadowtree[ind] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
+    end
 end
-evaluated!(interp, ret) = (_evaluated!(interp, ret); done!(interp))
+evaluated!(interp, ret, wasstaged = false) = (_evaluated!(interp, ret, wasstaged); done!(interp))
 
 """
 Advance to the next evaluatable statement
@@ -867,14 +881,15 @@ function process_loctree(res, contents, linfo, complete = true)
 end
 
 function readfileorhist(file)
-    if startswith(file,"REPL[")
+    if startswith(string(file),"REPL[")
         hist_idx = parse(Int,string(file)[6:end-1])
         isdefined(Base, :active_repl) || return nothing, ""
         hp = Base.active_repl.interface.modes[1].hist
-        contents = hp.history[hp.start_idx+hist_idx]
-    else
-        open(readstring, file)
+        return hp.history[hp.start_idx+hist_idx]
+    elseif isfile(string(file))
+        return open(readstring, string(file))
     end
+    return nothing
 end
 
 function reparse_meth(meth)
@@ -933,35 +948,60 @@ function prepare_locals(linfo, argvals = ())
     Environment(locals, gensyms, sparams)
 end
 
-function enter_call_expr(interp, expr)
+function enter_call_expr(interp, expr; enter_generated = false)
     f = to_function(expr.args[1])
     allargs = expr.args
     if is(f,Base._apply)
         f = to_function(allargs[2])
         allargs = Base.append_any((allargs[2],), allargs[3:end]...)
     end
+    # Can happen for thunks created by generated functions
     if !isa(f, Core.Builtin) && !isa(f, Core.IntrinsicFunction)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
-        method = try
-            which(f, argtypes)
-        catch err
-            println(f)
-            println(argtypes)
-            rethrow(err)
+        loctree, code = nothing, ""
+        if isa(f, LambdaInfo)
+            linfo = f
+            method = linfo.def
+            enter_generated = false
+            lenv = linfo.sparam_vals
+        else
+            method = try
+                which(f, argtypes)
+            catch err
+                println(f)
+                println(argtypes)
+                rethrow(err)
+            end
+            argtypes = Tuple{_Typeof(f), argtypes.parameters...}
+            args = allargs
+            sig, tvars = method.sig, method.tvars
+            isa(method, TypeMapEntry) && (method = method.func)
+            linfo = method.lambda_template
+            # Get static parameters
+            (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
+                               argtypes, sig, tvars)::SimpleVector
+            if method.isstaged && !enter_generated
+                # If we're stepping into a staged function, we need to use
+                # the specialization, rather than stepping thorugh the
+                # unspecialized method.
+                linfo = Core.Inference.specialize_method(method, argtypes, lenv)
+            else
+                loctree, code = reparse_meth(method)
+                if method.isstaged
+                    args = map(_Typeof, args)
+                end
+            end
         end
-        argtypes = Tuple{_Typeof(f), argtypes.parameters...}
-        args = allargs
-        env = prepare_locals(method.func.lambda_template, args)
+        env = prepare_locals(linfo, args)
         # Add static parameters to environment
-        (ti, lenv) = ccall(:jl_match_method, Any, (Any, Any, Any),
-                           argtypes, method.sig, method.tvars)::SimpleVector
         for i = 1:length(lenv)
             env.sparams[i] = lenv[i]
         end
-        isa(method, TypeMapEntry) && (method = method.func)
-        loctree, code = reparse_meth(method)
-        newinterp = enter(method,env,interp != nothing ? interp.stack : Any[], loctree = loctree, code = code)
+        newinterp = enter(method.isstaged && !enter_generated ? linfo : method,
+            env, interp != nothing ? interp.stack : Any[],
+            loctree = loctree, code = code,
+            evaluating_staged = method.isstaged && enter_generated)
         return newinterp
     end
     nothing
@@ -1115,6 +1155,19 @@ type InterpreterState
     s
 end
 
+function make_linfo(method, ret)
+    func = method.lambda_template
+    argnames = [func.slotnames[i] for i = 1:func.nargs]
+    lambda = Expr(:lambda, argnames, Expr(symbol("scope-block"), Expr(:block, ret)))
+    if !isempty(func.sparam_syms)
+        lambda = Expr(symbol("with-static-parameters"), lambda, func.sparam_syms...)
+    end
+    linfo = eval(method.module, lambda)
+    linfo.def = method
+    linfo
+end
+
+
 # Command Implementation
 function done_stepping!(state, interp; to_next_call = false)
     s = state.s
@@ -1131,7 +1184,11 @@ function done_stepping!(state, interp; to_next_call = false)
             LineEdit.transition(s, :abort)
             return nothing
         end
-        evaluated!(state.interp, oldinterp.retval)
+        ret = oldinterp.retval
+        if oldinterp.evaluating_staged
+            ret = make_linfo(oldinterp.linfo.def, oldinterp.retval)
+        end
+        evaluated!(state.interp, ret, oldinterp.evaluating_staged)
         to_next_call &&
           (isexpr(state.interp.next_expr[2], :call) || next_call!(state.interp))
     end
@@ -1219,16 +1276,16 @@ function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
     return true
 end
 
-function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si}}, command)
+function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si},Val{:sg}}, command)
     first = true
     while true
         expr = state.interp.next_expr[2]
         if isa(expr, Expr)
             if expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
-                x = enter_call_expr(state.top_interp, expr)
+                x = enter_call_expr(state.top_interp, expr, enter_generated = command == "sg")
                 if x !== nothing
                     state.interp = state.top_interp = x
-                    command == "s" && next_call!(x)
+                    command == "s" || command == "sg" && next_call!(x)
                     return true
                 end
             elseif !first && isexpr(expr, :return)
