@@ -1130,8 +1130,8 @@ function process_exception!(interp::Interpreter, D::AbstractDiagnostic, istop)
 end
 
 function eval_in_interp(interp, body, slbody = nothing, code = "")
-    selfsym = symbol("#self#")  # avoid having 2 arguments called `#self#`
-    unusedsym = symbol("#unused#")
+    selfsym = Symbol("#self#")  # avoid having 2 arguments called `#self#`
+    unusedsym = Symbol("#unused#")
     env = get_env_for_eval(interp)
     linfo = get_linfo(interp)
     lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
@@ -1185,9 +1185,9 @@ end
 function make_linfo(method, ret)
     func = method.lambda_template
     argnames = [func.slotnames[i] for i = 1:func.nargs]
-    lambda = Expr(:lambda, argnames, Expr(symbol("scope-block"), Expr(:block, ret)))
+    lambda = Expr(:lambda, argnames, Expr(Symbol("scope-block"), Expr(:block, ret)))
     if !isempty(func.sparam_syms)
-        lambda = Expr(symbol("with-static-parameters"), lambda, func.sparam_syms...)
+        lambda = Expr(Symbol("with-static-parameters"), lambda, func.sparam_syms...)
     end
     linfo = eval(method.module, lambda)
     linfo.def = method
@@ -1415,7 +1415,7 @@ function RunDebugREPL(top_interp)
         do_print_status = true
         cmd1 = split(command,' ')[1]
         do_print_status = try
-            execute_command(state, state.interp, Val{symbol(cmd1)}(), command)
+            execute_command(state, state.interp, Val{Symbol(cmd1)}(), command)
         catch err
             isa(err, AbstractDiagnostic) || rethrow(err)
             caught = false
