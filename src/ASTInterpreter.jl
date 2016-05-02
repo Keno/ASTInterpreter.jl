@@ -45,7 +45,7 @@ end
 
 immutable Environment
     locals::Vector{Nullable{Any}}
-    gensyms::Vector{Any}
+    ssavalues::Vector{Any}
     sparams::Vector{Any}
     # A vector from names to the slotnumber of that name
     # for which a reference was last encountered.
@@ -53,7 +53,7 @@ immutable Environment
 end
 Environment() = Environment(Vector{Nullable{Any}}(), Any[], Any[], Dict{Symbol, Int}())
 
-Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.gensyms), copy(e.sparams), copy(e.last_reference))
+Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.ssavalues), copy(e.sparams), copy(e.last_reference))
 
 type Interpreter
     stack::Vector{Any}
@@ -78,12 +78,12 @@ function make_shadowtree(tree)
             return parent_ev
         end
         unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) || isa(node,Slot) ||
-            isa(node,GenSym) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
+            isa(node,SSAValue) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
             node.head == :inbounds || node.head == :line)
             unevaluated = false
         end
-        if (isa(node, GenSym) || isa(node, Symbol) || isa(node, Slot) || isa(node,GlobalRef)) && isexpr(parent,:(=)) && parent.args[1] == node
+        if (isa(node, SSAValue) || isa(node, Symbol) || isa(node, Slot) || isa(node,GlobalRef)) && isexpr(parent,:(=)) && parent.args[1] == node
             unevaluated = false
         end
         if isexpr(parent, :static_typeof)
@@ -128,7 +128,7 @@ function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     tree = Expr(:body); tree.args = code
     enter(linfo, tree, env, stack; kwargs...)
 end
-enter(f::Function, env) = enter(methods(f).defs, env)
+enter(f::Function, env) = enter(first(methods(f)), env)
 
 function print_shadowtree(shadowtree, highlight = nothing, inds = nothing)
     from = nothing
@@ -501,12 +501,12 @@ function _step_expr(interp)
             interp.retval = node.args[1]
             return false
         end
-        if isa(node, Slot) || isa(node,GenSym)
+        if isa(node, Slot) || isa(node,SSAValue)
             # Check if we're the LHS of an assignment
             if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
                 ret = node
-            elseif isa(node,GenSym)
-                ret = interp.env.gensyms[node.id+1]
+            elseif isa(node,SSAValue)
+                ret = interp.env.ssavalues[node.id+1]
             else
                 nslots = length(interp.env.locals)
                 id = node.id
@@ -527,8 +527,8 @@ function _step_expr(interp)
             if node.head == :(=)
                 lhs = node.args[1]
                 rhs = node.args[2]
-                if isa(lhs, GenSym)
-                    interp.env.gensyms[lhs.id+1] = rhs
+                if isa(lhs, SSAValue)
+                    interp.env.ssavalues[lhs.id+1] = rhs
                 elseif isa(lhs, Slot)
                     interp.env.locals[lhs.id] = Nullable{Any}(rhs)
                     interp.env.last_reference[interp.linfo.slotnames[lhs.id]] =
@@ -557,7 +557,7 @@ function _step_expr(interp)
                     # Special handling to quote any literal symbols that may still
                     # be in here, so we can pass it into eval
                     for i in 1:length(node.args)
-                        if isa(node.args[i], Union{Symbol,GenSym,Slot,GlobalRef})
+                        if isa(node.args[i], Union{Symbol,SSAValue,Slot,GlobalRef})
                             node.args[i] = QuoteNode(node.args[i])
                         end
                     end
@@ -772,9 +772,9 @@ function collectcalls(file, parsedexpr, parsedloc, complete = true)
 
             push!(theassignments, (loc, nothing))                  # A = y
             push!(theassignments, (loc, nothing))                  # B = start(A)
-            push!(theassignments, (loc, nothing))                  # gensym() = next()
-            push!(theassignments, (loc, nothing))        # gensym() = ans.1
-            push!(theassignments, (loc, nothing))        # gensym() = ans.2
+            push!(theassignments, (loc, nothing))                  # ssavalue() = next()
+            push!(theassignments, (loc, nothing))        # ssavalue() = ans.1
+            push!(theassignments, (loc, nothing))        # ssavalue() = ans.2
         elseif isexpr(node, :(=))
             push!(theassignments, (Tree(parsedloc)[ind],node))
         elseif isexpr(node, :(&&))
@@ -937,8 +937,8 @@ function prepare_locals(linfo, argvals = ())
     # Construct the environment from the arguments
     argnames = linfo.slotnames[1:linfo.nargs]
     locals = Array(Nullable{Any}, length(linfo.slotflags))
-    ng = isa(linfo.gensymtypes, Int) ? linfo.gensymtypes : length(linfo.gensymtypes)
-    gensyms = Array(Any, ng)
+    ng = isa(linfo.ssavaluetypes, Int) ? linfo.ssavaluetypes : length(linfo.ssavaluetypes)
+    ssavalues = Array(Any, ng)
     sparams = Array(Any, length(linfo.sparam_syms))
     for i = 1:linfo.nargs
         if linfo.isva && i == length(argnames)
@@ -951,7 +951,7 @@ function prepare_locals(linfo, argvals = ())
     for i = (linfo.nargs+1):length(linfo.slotnames)
         locals[i] = Nullable{Any}()
     end
-    Environment(locals, gensyms, sparams, Dict{Symbol,Int}())
+    Environment(locals, ssavalues, sparams, Dict{Symbol,Int}())
 end
 
 function enter_call_expr(interp, expr; enter_generated = false)
@@ -1139,7 +1139,7 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     lnames = unique(lnames)
     f = Expr(:->,Expr(:tuple,lnames...), body)
     lam = linfo.def.module.eval(f)
-    linfo = methods(lam).defs.func.lambda_template
+    linfo = first(methods(lam)).lambda_template
     # New interpreter is on detached stack
     loctree = nothing
     if slbody != nothing
