@@ -78,7 +78,7 @@ function make_shadowtree(tree)
             return parent_ev
         end
         unevaluated = isa(node, Expr) || isa(node, GlobalRef) || isa(node, Symbol) || isa(node,Slot) ||
-            isa(node,SSAValue) || isa(node, GotoNode) || isa(node, QuoteNode) || isa(node, TopNode)
+            isa(node,SSAValue) || isa(node, GotoNode) || isa(node, QuoteNode)
         if isa(node, Expr) && (node.head == :meta || node.head == :boundscheck ||
             node.head == :inbounds || node.head == :line)
             unevaluated = false
@@ -710,8 +710,6 @@ end
 function to_function(x)
     if isa(x, Function) || isa(x, Core.IntrinsicFunction)
         x
-    elseif isa(x, TopNode)
-        Base.(x.name)
     elseif isa(x, GlobalRef)
         eval(x)
     else
