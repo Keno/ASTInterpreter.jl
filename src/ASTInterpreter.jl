@@ -120,7 +120,7 @@ function enter(meth::Union{Method, TypeMapEntry}, env::Environment, stack = Any[
 end
 function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
-        f = (linfo.def.module).(linfo.def.name)
+        f = getfield(linfo.def.module, linfo.def.name)
         meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
         return enter(meth, env, stack; kwargs...)
     end
