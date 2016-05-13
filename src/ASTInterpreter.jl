@@ -203,7 +203,7 @@ function annotate_highlights!(x, highlights)
 end
 
 function determine_line(interp, highlight)
-    line = interp.linfo.def.line
+    line = get_linfo(interp).def.line
     # Find a line number node previous to this expression
     if highlight !== nothing && !isempty(highlight)
         exprtree = interp.shadowtree.tree.x
@@ -1151,9 +1151,9 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
         if haskey(env.last_reference, varname)
             eval_env.locals[lidx] = env.locals[env.last_reference[varname]]
         else
-            oldidx = findfirst(interp.linfo.slotnames, varname)
+            oldidx = findfirst(get_linfo(interp).slotnames, varname)
             if oldidx == 0
-                sparamidx = findfirst(interp.linfo.sparam_syms, varname)
+                sparamidx = findfirst(get_linfo(interp).sparam_syms, varname)
                 sparamidx == 0 && continue
                 eval_env.locals[lidx] = env.sparams[sparamidx]
             else
@@ -1211,7 +1211,7 @@ function done_stepping!(state, interp; to_next_call = false)
         end
         ret = oldinterp.retval
         if oldinterp.evaluating_staged
-            ret = make_linfo(oldinterp.linfo.def, oldinterp.retval)
+            ret = make_linfo(get_linfo(oldinterp).def, oldinterp.retval)
         end
         evaluated!(state.interp, ret, oldinterp.evaluating_staged)
         to_next_call &&
