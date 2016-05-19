@@ -222,8 +222,16 @@ function determine_line(interp, highlight)
 end
 
 function print_sourcecode(linfo, code, line; file = SourceFile(code))
+    print_with_color(:bold, STDOUT,
+        string("In ", linfo.def.file,":",linfo.def.line, "\n"))
+
     startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
         max(1,linfo.def.line-1), line+3; file=file)
+
+    if startoffset == -1
+        print_with_color(:bold, STDOUT, "Line out of file range (bad debug info?)")
+        return
+    end
 
     # Compute necessary data for line numbering
     startline = compute_line(file, startoffset)
@@ -237,9 +245,6 @@ function print_sourcecode(linfo, code, line; file = SourceFile(code))
     if !isempty(code) && isempty(code[end])
         pop!(code)
     end
-
-    print_with_color(:bold, STDOUT,
-        string("In ", linfo.def.file,":",linfo.def.line, "\n"))
 
     for textline in code
         print_with_color(lineno == current_line ? :yellow : :bold,
@@ -257,6 +262,9 @@ entire function.
 """
 function compute_source_offsets(code, offset, startline, stopline; file = SourceFile(interp.code))
     offsetline = compute_line(file, offset)
+    if offsetline - 3 > length(file.offsets) || startline > length(file.offsets)
+        return -1, -1
+    end
     startoffset = max(file.offsets[max(offsetline-3,1)], file.offsets[startline])
     stopoffset = endof(code)-1
     if offsetline + 3 < endof(file.offsets)
@@ -291,6 +299,14 @@ function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fanc
                      end
                  end,
                  PreOrderDFS(ex,node->isa(node, Expr)))
+        nargs = length(ex.args)
+        # Suppress arguments that are too long
+        for (i, arg) in enumerate(ex.args)
+            nbytes = length(repr(arg))
+            if nbytes > max(40, div(200,nargs))
+                ex.args[i] = Suppressed("$nbytes bytes of output")
+            end
+        end
         if wrap; ex = ex.args[1]; end
         println("About to run: ", ex)
     elseif interp.loctree === nothing
@@ -1048,7 +1064,12 @@ function print_var(io::IO, name, val::Nullable, undef_callback)
             undef_callback(io,name)
         else
             val = get(val)
-            println(io, name, "::", typeof(val), " = ", val)
+            T = typeof(val)
+            val = repr(val)
+            if length(val) > 150
+                val = Suppressed("$(length(val)) bytes of output")
+            end
+            println(io, name, "::", T, " = ", val)
         end
     end
 end
