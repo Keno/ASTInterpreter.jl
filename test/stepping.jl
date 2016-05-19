@@ -36,3 +36,20 @@ interp = state.interp
 ASTInterpreter.execute_command(state, state.top_interp, Val{:finish}(), "finish")
 @assert interp.retval == Int64
 
+# Optional arguments
+function optional(n = sin(1))
+    x = asin(n)
+    cos(x)
+end
+
+interp = ASTInterpreter.enter_call_expr(nothing, :($(optional)()))
+state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+# First call steps in
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == nothing
+# cos(1.0)
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == nothing
+# return
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == cos(1.0)

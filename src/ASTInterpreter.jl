@@ -69,6 +69,7 @@ type Interpreter
     loctree::Any
     retval::Any
     exception_frames::Vector{Int}
+    did_wrappercall::Bool
 end
 
 function make_shadowtree(tree)
@@ -101,7 +102,8 @@ function enter(linfo, tree::Expr, env, stack = Any[];
     shadowtree, it = make_shadowtree(tree)
 
     interp = Interpreter(stack, env, linfo, evaluating_staged, tree, it,
-        start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}())
+        start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}(),
+        false)
     push!(stack, interp)
     ind, node = next_expr!(interp)
 
@@ -656,7 +658,27 @@ end
 
 isgotonode(node) = isa(node, GotoNode) || isexpr(node, :gotoifnot)
 
-function next_line!(interp)
+"""
+Determine whether we are calling a function for which the current function
+is a wrapper (either because of optional arguments or becaue of keyword arguments).
+"""
+function iswrappercall(interp, expr)
+    !isexpr(expr, :call) && return false
+    r = determine_method_for_expr(interp, expr; enter_generated = false)
+    if r !== nothing
+        linfo, method, args, _ = r
+        ours, theirs = interp.linfo.def, method
+        # Check if this a method of the same function that shares a definition line/file.
+        # If so, we're likely in an automatically generated wrapper.
+        if ours.sig.parameters[1] == theirs.sig.parameters[1] &&
+            ours.line == theirs.line && ours.file == theirs.file
+            return true
+        end
+    end
+    return false
+end
+
+function next_line!(interp; state = nothing)
     didchangeline = false
     line = determine_line(interp, interp.next_expr[1])
     first = true
@@ -678,9 +700,15 @@ function next_line!(interp)
         if isgotonode(node)
             _step_expr(interp) || return false
             didchangeline = line != determine_line(interp, interp.next_expr[1])
+        elseif iswrappercall(interp, node)
+            interp.did_wrappercall = true
+            interp = enter_call_expr(interp, node)
         else
             _step_expr(interp) || return false
         end
+    end
+    if state !== nothing && interp != state.interp
+        state.interp = state.top_interp = interp
     end
     done!(interp)
     # Ok, we stepped to the next line. Now step through to the next call
@@ -968,7 +996,7 @@ function prepare_locals(linfo, argvals = ())
     Environment(locals, ssavalues, sparams, Dict{Symbol,Int}())
 end
 
-function enter_call_expr(interp, expr; enter_generated = false)
+function determine_method_for_expr(interp, expr; enter_generated = false)
     f = to_function(expr.args[1])
     allargs = expr.args
     if is(f,Base._apply)
@@ -979,7 +1007,6 @@ function enter_call_expr(interp, expr; enter_generated = false)
     if !isa(f, Core.Builtin) && !isa(f, Core.IntrinsicFunction)
         args = allargs[2:end]
         argtypes = Tuple{map(_Typeof,args)...}
-        loctree, code = nothing, ""
         if isa(f, LambdaInfo)
             linfo = f
             method = linfo.def
@@ -1007,11 +1034,23 @@ function enter_call_expr(interp, expr; enter_generated = false)
                 # unspecialized method.
                 linfo = Core.Inference.specialize_method(method, argtypes, lenv)
             else
-                loctree, code = reparse_meth(method)
                 if method.isstaged
                     args = map(_Typeof, args)
                 end
             end
+        end
+        return linfo, method, args, lenv
+    end
+    nothing
+end
+
+function enter_call_expr(interp, expr; enter_generated = false)
+    r = determine_method_for_expr(interp, expr; enter_generated = enter_generated)
+    if r !== nothing
+        linfo, method, args, lenv = r
+        loctree, code = nothing, ""
+        if !(method.isstaged && !enter_generated)
+            loctree, code = reparse_meth(method)
         end
         env = prepare_locals(linfo, args)
         # Add static parameters to environment
@@ -1235,6 +1274,12 @@ function done_stepping!(state, interp; to_next_call = false)
             ret = make_linfo(get_linfo(oldinterp).def, oldinterp.retval)
         end
         evaluated!(state.interp, ret, oldinterp.evaluating_staged)
+        # For wrappercall, also pop the wrapper
+        if to_next_call && state.interp.did_wrappercall
+            finish!(state.interp)
+            done_stepping!(state, state.interp; to_next_call = to_next_call)
+            return interp
+        end
         to_next_call &&
           (isexpr(state.interp.next_expr[2], :call) || next_call!(state.interp))
     end
@@ -1356,7 +1401,7 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},V
     state.level = 1
     if command == "ns" ? !next_statement!(state.interp) :
        command == "nc" ? !next_call!(state.interp) :
-       command == "n" ? !next_line!(state.interp) :
+       command == "n" ? !next_line!(state.interp; state = state) :
         !step_expr(state.interp) #= command == "se" =#
         done_stepping!(state, state.interp; to_next_call = command == "n")
         return true
