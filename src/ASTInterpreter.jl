@@ -223,12 +223,11 @@ function determine_line(interp, highlight)
     line
 end
 
-function print_sourcecode(linfo, code, line; file = SourceFile(code))
-    print_with_color(:bold, STDOUT,
-        string("In ", linfo.def.file,":",linfo.def.line, "\n"))
-
+print_sourcecode(linfo::LambdaInfo, code, line) =
+    print_sourcecode(code, line, linfo.def.file, linfo.def.line; file = SourceFile(code))
+function print_sourcecode(code, line, deffile, defline; file = SourceFile(code))
     startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
-        max(1,linfo.def.line-1), line+3; file=file)
+        max(1,defline-1), line+3; file=file)
 
     if startoffset == -1
         print_with_color(:bold, STDOUT, "Line out of file range (bad debug info?)")
@@ -247,6 +246,9 @@ function print_sourcecode(linfo, code, line; file = SourceFile(code))
     if !isempty(code) && isempty(code[end])
         pop!(code)
     end
+
+    print_with_color(:bold, STDOUT,
+        string("In ", deffile,":",defline, "\n"))
 
     for textline in code
         print_with_color(lineno == current_line ? :yellow : :bold,
@@ -928,14 +930,20 @@ function process_loctree(res, contents, linfo, complete = true)
     loctree, contents
 end
 
+const SEARCH_PATH = [""]
 function readfileorhist(file)
     if startswith(string(file),"REPL[")
         hist_idx = parse(Int,string(file)[6:end-1])
         isdefined(Base, :active_repl) || return nothing, ""
         hp = Base.active_repl.interface.modes[1].hist
         return hp.history[hp.start_idx+hist_idx]
-    elseif isfile(string(file))
-        return open(readstring, string(file))
+    else
+        for path in SEARCH_PATH
+            fullpath = joinpath(path,string(file))
+            if isfile(fullpath)
+                return open(readstring, fullpath)
+            end
+        end
     end
     return nothing
 end
