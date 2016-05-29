@@ -15,7 +15,7 @@ import JuliaParser.Diagnostics: diag, AbstractDiagnostic, display_diagnostic
 import AbstractTrees: children, printnode
 
 pretty_repr(x) = (string(x), :default)
-pretty_repr(x::LineNumberNode) = (string(x.file, ": ", x.line), :red)
+pretty_repr(x::LineNumberNode) = (string("line: ", x.line), :red)
 function pretty_repr(x::Expr)
     if x.head == :body
         ("Body", :blue)
@@ -204,23 +204,42 @@ function annotate_highlights!(x, highlights)
     wrapcolor == nothing ? x : Coloring(x, wrapcolor)
 end
 
-function determine_line(interp, highlight)
+is_loc_meta(expr, kind) = isexpr(expr, :meta) && length(expr.args) >= 1 && expr.args[1] === kind
+
+function determine_line_and_file(interp, highlight)
+    file = get_linfo(interp).def.file
     line = get_linfo(interp).def.line
+    foundline = false
+    extra_locs = Any[]
     # Find a line number node previous to this expression
     if highlight !== nothing && !isempty(highlight)
         exprtree = interp.shadowtree.tree.x
-        for i = highlight[1]:-1:1
+        i = highlight[1]
+        while i >= 1
             expr = exprtree.args[i]
-            if isa(expr, LineNumberNode)
+            if !foundline && isa(expr, LineNumberNode)
                 line = expr.line
-                break
-            elseif isexpr(expr, :line)
+                foundline = true
+            elseif !foundline && isexpr(expr, :line)
                 line = expr.args[1]
+                foundline = true
+            elseif foundline && is_loc_meta(expr, :push_loc)
+                file = expr.args[2]
+                extra_locs = determine_line_and_file(interp, [i-1])
                 break
+            elseif is_loc_meta(expr, :pop_loc)
+                npops = 1
+                while npops >= 1
+                    i -= 1
+                    expr = exprtree.args[i]
+                    is_loc_meta(expr, :pop_loc) && (npops += 1)
+                    is_loc_meta(expr, :push_loc) && (npops -= 1)
+                end
             end
+            i -= 1
         end
     end
-    line
+    [extra_locs; (file, line)]
 end
 
 print_sourcecode(linfo::LambdaInfo, code, line) =
@@ -285,7 +304,21 @@ global fancy_mode = false
 print_status(_::Void, args...) = nothing
 function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
-        print_sourcecode(interp.linfo, interp.code, determine_line(interp, highlight))
+        fls = determine_line_and_file(interp, highlight)
+        for (file,line) in fls[end:-1:2]
+            # See if we can get the code for this
+            dfile = Base.find_source_file(string(file))
+            file = dfile == nothing ? file : dfile
+            contents = readfileorhist(file)
+            file = "macro expansion from $file"
+            if contents == nothing
+                print_with_color(:bold, STDOUT,
+                    string("In ", file,":",line, "\n"))
+                continue
+            end
+            print_sourcecode(contents, line, file, max(1,line-3))
+        end
+        print_sourcecode(interp.linfo, interp.code, fls[1][2])
         ex = interp.shadowtree[highlight].tree.x
         # print slots with their names
         wrap = !isa(ex,Expr)
@@ -648,12 +681,17 @@ function next_until!(f,interp)
 end
 next_call!(interp) = next_until!(node->isexpr(node,:call)||isexpr(node,:return), interp)
 
-function changed_line(expr, line)
-    if isa(expr, LineNumberNode)
+function changed_line!(expr, line, fls)
+    if length(fls) == 1 && isa(expr, LineNumberNode)
         return expr.line != line
-    elseif isa(expr, Expr) && isexpr(expr, :line)
+    elseif length(fls) == 1 && isa(expr, Expr) && isexpr(expr, :line)
         return expr.args[1] != line
     else
+        if is_loc_meta(expr, :pop_loc)
+            pop!(fls)
+        elseif is_loc_meta(expr, :push_loc)
+            push!(fls,(expr.args[2],0))
+        end
         return false
     end
 end
@@ -682,13 +720,14 @@ end
 
 function next_line!(interp; state = nothing)
     didchangeline = false
-    line = determine_line(interp, interp.next_expr[1])
+    fls = determine_line_and_file(interp, interp.next_expr[1])
+    line = fls[1][2]
     first = true
     while !didchangeline
         ind, node = interp.next_expr
         # Skip evaluated values (e.g. constants)
         while interp.shadowtree.shadow[ind].val
-            didchangeline = changed_line(node, line)
+            didchangeline = changed_line!(node, line, fls)
             didchangeline && break
             ind, node = next_expr!(interp)
         end
@@ -701,7 +740,8 @@ function next_line!(interp; state = nothing)
         # If this is a goto node, step it and reevaluate
         if isgotonode(node)
             _step_expr(interp) || return false
-            didchangeline = line != determine_line(interp, interp.next_expr[1])
+            fls = determine_line_and_file(interp, interp.next_expr[1])
+            didchangeline = line != fls[1][2]
         elseif iswrappercall(interp, node)
             interp.did_wrappercall = true
             interp = enter_call_expr(interp, node)
@@ -721,7 +761,7 @@ end
 
 function advance_to_line(interp, line)
     while true
-        at_line = determine_line(interp, interp.next_expr[1])
+        at_line = determine_line_and_file(interp, interp.next_expr[1])[1][2]
         at_line == line && break
         next_line!(interp) || break
     end

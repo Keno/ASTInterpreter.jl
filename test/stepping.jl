@@ -53,3 +53,38 @@ ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 # return
 ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 @assert interp.retval == cos(1.0)
+
+# Macros
+macro insert_some_calls()
+    esc(quote
+        x = sin(b)
+        y = asin(x)
+        z = sin(y)
+    end)
+end
+
+# Work around the fact that we can't detect macro expansions if the macro
+# is defined in the same file
+include_string("""
+function test_macro()
+    a = sin(5)
+    b = asin(a)
+    @insert_some_calls
+    z
+end
+""","file.jl")
+
+interp = ASTInterpreter.enter_call_expr(nothing, :($(test_macro)()))
+state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+# a = sin(5)
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == nothing
+# b = asin(5)
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == nothing
+# @insert_some_calls
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == nothing
+# return z
+ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
+@assert interp.retval == sin(5)
