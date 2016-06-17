@@ -1024,6 +1024,7 @@ function reparse_meth(meth)
 end
 
 function prepare_locals(linfo, argvals = ())
+    linfo = linfo.def.lambda_template
     # Construct the environment from the arguments
     argnames = linfo.slotnames[1:linfo.nargs]
     locals = Array(Nullable{Any}, length(linfo.slotflags))
@@ -1115,9 +1116,11 @@ function enter_call_expr(interp, expr; enter_generated = false)
 end
 
 function print_linfo_desc(io::IO, linfo, specslottypes = false)
+    slottypes = linfo.slottypes
+    linfo = linfo.def.lambda_template
     argnames = linfo.slotnames[2:linfo.nargs]
-    spectypes = specslottypes && (linfo.slottypes != nothing) ?
-        linfo.slottypes[2:linfo.nargs] : Any[Any for i=1:length(argnames)]
+    spectypes = specslottypes && (slottypes != nothing) ?
+        slottypes[2:linfo.nargs] : Any[Any for i=1:length(argnames)]
     print(io, linfo.def.name,'(')
     first = true
     for (argname, argT) in zip(argnames, spectypes)
@@ -1162,6 +1165,7 @@ function print_var(io::IO, name, val::Nullable, undef_callback)
 end
 
 function print_locals(io::IO, linfo, env::Environment, undef_callback)
+    linfo = linfo.def.lambda_template
     for i = 1:length(env.locals)
         print_var(io, linfo.slotnames[i], env.locals[i], undef_callback)
     end
