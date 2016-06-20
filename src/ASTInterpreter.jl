@@ -1048,7 +1048,7 @@ end
 function determine_method_for_expr(interp, expr; enter_generated = false)
     f = to_function(expr.args[1])
     allargs = expr.args
-    if is(f,Base._apply)
+    if is(f,Core._apply)
         f = to_function(allargs[2])
         allargs = Base.append_any((allargs[2],), allargs[3:end]...)
     end
