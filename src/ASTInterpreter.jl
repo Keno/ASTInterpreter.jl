@@ -70,6 +70,7 @@ type Interpreter
     retval::Any
     exception_frames::Vector{Int}
     did_wrappercall::Bool
+    prehook::AbstractString
 end
 
 function make_shadowtree(tree)
@@ -103,7 +104,7 @@ function enter(linfo, tree::Expr, env, stack = Any[];
 
     interp = Interpreter(stack, env, linfo, evaluating_staged, tree, it,
         start(it), nothing, shadowtree, code, loctree, nothing, Vector{Int}(),
-        false)
+        false, "")
     push!(stack, interp)
     ind, node = next_expr!(interp)
 
@@ -246,7 +247,7 @@ print_sourcecode(linfo::LambdaInfo, code, line) =
     print_sourcecode(code, line, linfo.def.file, linfo.def.line; file = SourceFile(code))
 function print_sourcecode(code, line, deffile, defline; file = SourceFile(code))
     startoffset, stopoffset = compute_source_offsets(code, file.offsets[line],
-        max(1,defline-1), line+3; file=file)
+        max(1,file == deffile ? defline : line-1), line+3; file=file)
 
     if startoffset == -1
         print_with_color(:bold, STDOUT, "Line out of file range (bad debug info?)")
@@ -301,8 +302,8 @@ end
 
 global fancy_mode = false
 
-print_status(_::Void, args...) = nothing
-function print_status(interp::Interpreter, highlight = interp.next_expr[1]; fancy = fancy_mode)
+print_status(state, _::Void, args...) = nothing
+function print_status(state, interp::Interpreter, highlight = interp.next_expr[1]; fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
         fls = determine_line_and_file(interp, highlight)
         for (file,line) in fls[end:-1:2]
@@ -597,7 +598,7 @@ function _step_expr(interp)
             elseif node.head == :gotoifnot
                 ret = node
                 if !isa(node.args[1], Bool)
-                    throw(TypeError(interp.linfo.name, "if", Bool, node.args[1]))
+                    throw(TypeError(interp.linfo.def.name, "if", Bool, node.args[1]))
                 end
                 if !node.args[1]
                     return goto!(interp, node.args[2])
@@ -1081,7 +1082,7 @@ function determine_method_for_expr(interp, expr; enter_generated = false)
                 # If we're stepping into a staged function, we need to use
                 # the specialization, rather than stepping thorugh the
                 # unspecialized method.
-                linfo = Core.Inference.specialize_method(method, argtypes, lenv)
+                linfo = Core.Inference.specialize_method(method, argtypes, lenv, false)
             else
                 if method.isstaged
                     args = map(_Typeof, args)
@@ -1290,6 +1291,8 @@ type InterpreterState
     interp
     level
     s
+    julia_prompt
+    main_mode
 end
 
 function make_linfo(method, ret)
@@ -1342,6 +1345,14 @@ function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
     finish!(state.interp)
     done_stepping!(state, state.interp; to_next_call = true)
     return true
+end
+
+function execute_command(state, interp::Interpreter, ::Val{:edit}, cmd)
+    file, line = determine_line_and_file(interp, interp.next_expr[1])[end]
+    dfile = Base.find_source_file(string(file))
+    file = dfile == nothing ? file : dfile
+    Base.edit(file, line)
+    return false
 end
 
 function execute_command(state, interp, ::Val{:bt}, cmd)
@@ -1419,7 +1430,7 @@ function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
     return true
 end
 
-function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si},Val{:sg}}, command)
+function execute_command(state, interp::Interpreter, cmd::Union{Val{:s},Val{:si},Val{:sg}}, command)
     first = true
     while true
         expr = state.interp.next_expr[2]
@@ -1428,7 +1439,7 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:s},Val{:si},Va
                 x = enter_call_expr(state.top_interp, expr, enter_generated = command == "sg")
                 if x !== nothing
                     state.interp = state.top_interp = x
-                    command == "s" || command == "sg" && next_call!(x)
+                    (cmd == Val{:s}() || cmd == Val{:sg}()) && next_call!(x)
                     return true
                 end
             elseif !first && isexpr(expr, :return)
@@ -1473,21 +1484,40 @@ function eval_code(state, command)
             display_diagnostic(STDERR, command, e)
         end
         REPL.println(STDERR); REPL.println(STDERR)
-        return true
+        return false, nothing
     end
     body = Lexer.¬(res)
     ok, result = eval_in_interp(state.interp, body, res, command)
 end
 eval_code(state, buf::IOBuffer) = eval_code(state, takebuf_string(buf))
 
+function language_specific_prompt(state, stack::Interpreter)
+    state.julia_prompt
+end
+
+function run_pre_hooks(state, interp::Interpreter)
+    if !isempty(interp.prehook)
+        ok, res = eval_code(state, interp.prehook)
+        ok && res !== nothing && (display(res); println())
+    end
+end
+run_pre_hooks(state, interp) = nothing
+
+function execute_command(state, interp::Interpreter, ::Val{:prehook}, cmd)
+    idx = findfirst(cmd, ' ')
+    cmd = idx == 0 ? "" : cmd[idx+1:end]
+    interp.prehook = cmd
+    return false
+end
+
 function RunDebugREPL(top_interp)
-    prompt(level, name) = "$level|$name > "
+    promptname(level, name) = "$level|$name > "
 
     repl = Base.active_repl
-    state = InterpreterState(top_interp, top_interp, 1, nothing)
+    state = InterpreterState(top_interp, top_interp, 1, nothing, nothing, nothing)
 
     # Setup debug panel
-    panel = LineEdit.Prompt(prompt(state.level, "debug");
+    panel = LineEdit.Prompt(promptname(state.level, "debug");
         prompt_prefix="\e[38;5;166m",
         prompt_suffix=Base.text_colors[:white],
         on_enter = s->true)
@@ -1496,7 +1526,7 @@ function RunDebugREPL(top_interp)
     replc = Base.REPL.REPLCompletionProvider(repl)
 
     # Set up the main Julia prompt
-    julia_prompt = LineEdit.Prompt(prompt(state.level, "julia");
+    julia_prompt = LineEdit.Prompt(promptname(state.level, "julia");
         # Copy colors from the prompt object
         prompt_prefix = repl.prompt_color,
         prompt_suffix = (repl.envcolors ? Base.input_color : repl.input_color),
@@ -1513,6 +1543,8 @@ function RunDebugREPL(top_interp)
 
 
     state.interp = top_interp
+    state.julia_prompt = julia_prompt
+    state.main_mode = panel
 
     panel.on_done = (s,buf,ok)->begin
         state.s = s
@@ -1550,13 +1582,13 @@ function RunDebugREPL(top_interp)
             return true
         end
         if old_level != state.level
-            panel.prompt = prompt(state.level,"debug")
-            julia_prompt.prompt = prompt(state.level,"julia")
+            panel.prompt = promptname(state.level,"debug")
+            julia_prompt.prompt = promptname(state.level,"julia")
         end
         LineEdit.reset_state(s)
         if do_print_status
-            print_status(state.interp)
-            println()
+            print_status(state, state.interp)
+            run_pre_hooks(state, state.interp)
         end
         return true
     end
@@ -1572,24 +1604,16 @@ function RunDebugREPL(top_interp)
         xbuf = copy(buf)
         ok, result = eval_code(state, buf)
         if ok
-            show(result)
+            display(result)
             println(); println()
         else
-            if isa(result, AbstractDiagnostic)
-                display_diagnostic(STDOUT, takebuf_string(xbuf), result)
-                println(STDOUT)
-                LineEdit.reset_state(s)
-                return true
-            else
-                REPL.display_error(STDERR, result, Base.catch_backtrace())
-                REPL.println(STDERR); REPL.println(STDERR)
-                # Convenience hack. We'll see if this is more useful or annoying
-                for c in all_commands
-                    !startswith(command, c) && continue
-                    LineEdit.transition(s, panel)
-                    LineEdit.state(s, panel).input_buffer = xbuf
-                    break
-                end
+            command = takebuf_string(buf)
+            # Convenience hack. We'll see if this is more useful or annoying
+            for c in all_commands
+                !startswith(command, c) && continue
+                LineEdit.transition(s, panel)
+                LineEdit.state(s, panel).input_buffer = xbuf
+                break
             end
         end
         LineEdit.reset_state(s)
@@ -1599,9 +1623,10 @@ function RunDebugREPL(top_interp)
     const repl_switch = Dict{Any,Any}(
         '`' => function (s,args...)
             if isempty(s) || position(LineEdit.buffer(s)) == 0
+                prompt = language_specific_prompt(state, state.interp)
                 buf = copy(LineEdit.buffer(s))
-                LineEdit.transition(s, julia_prompt) do
-                    LineEdit.state(s, julia_prompt).input_buffer = buf
+                LineEdit.transition(s, prompt) do
+                    LineEdit.state(s, prompt).input_buffer = buf
                 end
             else
                 LineEdit.edit_insert(s,key)
@@ -1615,7 +1640,7 @@ function RunDebugREPL(top_interp)
 
     # Skip evaluated values (e.g. constants)
     done!(state.interp)
-    print_status(state.interp)
+    print_status(state, state.interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
@@ -1654,8 +1679,9 @@ macro enter(arg)
     @assert isa(arg, Expr) && arg.head == :call
     quote
         theargs = $(esc(Expr(:tuple,arg.args...)))
-        ASTInterpreter.RunDebugREPL(
-            ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...)))
+        interp = ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...))
+        ASTInterpreter.next_call!(interp)
+        ASTInterpreter.RunDebugREPL(interp)
     end
 end
 
