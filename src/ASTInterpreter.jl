@@ -123,9 +123,7 @@ function enter(meth::Union{Method, TypeMapEntry}, env::Environment, stack = Any[
 end
 function enter(linfo::LambdaInfo, env::Environment, stack = Any[]; kwargs...)
     if linfo.inferred
-        f = getfield(linfo.def.module, linfo.def.name)
-        meth = which(f,Tuple{linfo.specTypes.parameters[2:end]...})
-        return enter(meth, env, stack; kwargs...)
+        return enter(linfo.def, env, stack; kwargs...)
     end
     code = Base.uncompressed_ast(linfo)
     tree = Expr(:body); tree.args = code
@@ -588,7 +586,7 @@ function _step_expr(interp)
                     interp.env.last_reference[interp.linfo.slotnames[lhs.id]] =
                         lhs.id
                 elseif isa(lhs, GlobalRef)
-                    eval(:($lhs = $(QuoteNode(rhs))))
+                    eval(lhs.mod,:($(lhs.name) = $(QuoteNode(rhs))))
                 end
                 # Special case hack for readability.
                 # ret = rhs
@@ -1473,21 +1471,27 @@ function execute_command(state, interp::Interpreter, ::Union{Val{:ns},Val{:nc},V
 end
 
 function eval_code(state, command)
+    local theerr = nothing
     res = try
         ts = Lexer.TokenStream{Lexer.SourceLocToken}(command)
         ts.filename = "REPL"
         res = Main.JuliaParser.Parser.parse(ts)
-    catch e
-        if !isa(e, AbstractDiagnostic)
-            REPL.display_error(STDERR, err, Base.catch_backtrace())
-        else
-            display_diagnostic(STDERR, command, e)
-        end
-        REPL.println(STDERR); REPL.println(STDERR)
-        return false, nothing
+    catch err
+        theerr = err
     end
-    body = Lexer.¬(res)
-    ok, result = eval_in_interp(state.interp, body, res, command)
+    if theerr == nothing
+        body = Lexer.¬(res)
+        ok, result = eval_in_interp(state.interp, body, res, command)
+        ok && return (ok, result)
+        theerr = result
+    end
+    if !isa(theerr, AbstractDiagnostic)
+        REPL.display_error(STDERR, theerr, Base.catch_backtrace())
+    else
+        display_diagnostic(STDERR, command, theerr)
+    end
+    REPL.println(STDERR); REPL.println(STDERR)
+    return false, nothing
 end
 eval_code(state, buf::IOBuffer) = eval_code(state, takebuf_string(buf))
 
