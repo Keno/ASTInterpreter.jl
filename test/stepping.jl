@@ -2,10 +2,11 @@ using ASTInterpreter
 
 immutable DummyState; end
 Base.LineEdit.transition(s::DummyState, _) = nothing
+dummy_state(interp) = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState(), nothing, nothing)
 
 # Steps through the whole expression using `s`
 function step_through(interp)
-    state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+    state = dummy_state(interp)
     while !(isa(interp.next_expr[2], Expr) && interp.next_expr[2].head == :return)
         ASTInterpreter.execute_command(state, interp, Val{:s}(), "s")
     end
@@ -21,7 +22,7 @@ end
 end
 callgenerated() = generatedfoo(1)
 interp = ASTInterpreter.enter_call_expr(nothing, :($(callgenerated)()))
-state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+state = dummy_state(interp)
 
 # Step into the generated function itself
 ASTInterpreter.execute_command(state, state.top_interp, Val{:sg}(), "sg")
@@ -43,7 +44,7 @@ function optional(n = sin(1))
 end
 
 interp = ASTInterpreter.enter_call_expr(nothing, :($(optional)()))
-state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+state = dummy_state(interp)
 # First call steps in
 ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 @assert interp.retval == nothing
@@ -75,7 +76,7 @@ end
 ""","file.jl")
 
 interp = ASTInterpreter.enter_call_expr(nothing, :($(test_macro)()))
-state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+state = dummy_state(interp)
 # a = sin(5)
 ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 @assert interp.retval == nothing

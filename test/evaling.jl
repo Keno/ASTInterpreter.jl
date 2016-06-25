@@ -5,7 +5,7 @@ function evalfoo1(x,y)
     x+y
 end
 interp = ASTInterpreter.enter_call_expr(nothing, :($(evalfoo1)(1,2)))
-state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+state = dummy_state(interp)
 ok, res = ASTInterpreter.eval_code(state, "x")
 @assert res == 1
 
@@ -17,7 +17,7 @@ function evalsparams{T}(x::T)
     x
 end
 interp = ASTInterpreter.enter_call_expr(nothing, :($(evalsparams)(1)))
-state = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState())
+state = dummy_state(interp)
 ok, res = ASTInterpreter.eval_code(state, "x")
 @assert res == 1
 
