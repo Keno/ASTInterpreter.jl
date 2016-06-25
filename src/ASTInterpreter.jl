@@ -1047,7 +1047,17 @@ end
 function determine_method_for_expr(interp, expr; enter_generated = false)
     f = to_function(expr.args[1])
     allargs = expr.args
-    if is(f,Core._apply)
+    # Extract keyword args
+    local kwargs = Expr(:parameters)
+    if length(allargs) > 1 && isexpr(allargs[2], :parameters)
+        kwargs = splice!(allargs, 2)
+    end
+    if !isempty(kwargs.args)
+        of = f
+        f = Core.kwfunc(f)
+        allargs = [f,reduce(vcat,Any[[ex.args[1];ex.args[2]] for ex in kwargs.args]),of,
+            allargs[2:end]...]
+    elseif is(f,Core._apply)
         f = to_function(allargs[2])
         allargs = Base.append_any((allargs[2],), allargs[3:end]...)
     end
@@ -1064,6 +1074,7 @@ function determine_method_for_expr(interp, expr; enter_generated = false)
             method = try
                 which(f, argtypes)
             catch err
+                @show typeof(f)
                 println(f)
                 println(argtypes)
                 rethrow(err)
@@ -1682,7 +1693,8 @@ macro enter(arg)
     arg = ASTInterpreter.lower!(arg)
     @assert isa(arg, Expr) && arg.head == :call
     quote
-        theargs = $(esc(Expr(:tuple,arg.args...)))
+        theargs = $(esc(Expr(:tuple,map(
+            x->isexpr(x,:parameters)?QuoteNode(x):x,arg.args)...)))
         interp = ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...))
         ASTInterpreter.next_call!(interp)
         ASTInterpreter.RunDebugREPL(interp)
