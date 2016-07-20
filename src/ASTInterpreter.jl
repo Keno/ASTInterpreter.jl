@@ -1350,6 +1350,32 @@ function done_stepping!(state, interp; to_next_call = false)
     interp
 end
 
+function execute_command(state, interp::Interpreter, ::Val{:?}, cmd)
+    display(
+            Base.@md_str """
+    Basic Commands:\\
+    - `n` steps to the next line\\
+    - `s` steps into the next call\\
+    - `finish` runs to the end of the function\\
+    - `bt` shows a simple backtrace\\
+    - ``` `stuff ``` runs `stuff` in the current frame's context\\
+    - `fr v` will show all variables in the current frame\\
+    - `f n` where `n` is an integer, will go to the `n`-th frame.
+
+    Advanced commands:\\
+    - `nc` steps to the next call\\
+    - `ns` steps to the next statement\\
+    - `se` does one expression step\\
+    - `si` does the same but steps into a call if a call is the next expression\\
+    - `sg` steps into a generated function\\
+    - `shadow` shows the internal representation of the expression tree\\
+       (for debugger debugging only)\\
+    - `loc` shows the column data for the current top frame,\\
+        in the same format as JuliaParsers's testshell.\\
+    """)
+    return false
+end
+
 function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
     finish!(state.interp)
     done_stepping!(state, state.interp; to_next_call = true)
