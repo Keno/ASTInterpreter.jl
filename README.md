@@ -5,7 +5,7 @@
 The AST Interpreter component of Gallium (i.e. does not include any breakpoint,
   stuff, etc.). This is a development prototype and comes with it's own debug
   prompt for that purpose.
-  
+
 Usage:
 ```
 using ASTInterpreter
@@ -19,7 +19,7 @@ interp = enter(foo, Environment(Dict(:n => 20),Dict{Symbol,Any}()))
 ASTInterpreter.RunDebugREPL(interp)
 ```
 Basic Commands:
-- `n` steps to the line
+- `n` steps to the next line
 - `s` steps into the next call
 - `finish` runs to the end of the function
 - `bt` shows a simple backtrace
@@ -32,6 +32,7 @@ Advanced commands:
 - `ns` steps to the next statement
 - `se` does one expression step
 - `si` does the same but steps into a call if a call is the next expression
+- `sg` steps into a generated function
 - `shadow` shows the internal representation of the expression tree (for debugger debugging only)
 - `loc` shows the column data for the current top frame, in the same format
   as JuliaParsers's testshell.
