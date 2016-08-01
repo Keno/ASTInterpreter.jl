@@ -94,9 +94,11 @@ function make_shadowtree(tree)
         !unevaluated
     end
     shadowtree = AbstractTrees.ShadowTree(Tree(resulttree), Tree(annotations))
-    it = filter(x->true,indenumerate(PostOrderDFS(resulttree)))
+    it = indenumerate(PostOrderDFS(resulttree))
     shadowtree, it
 end
+
+using AbstractTrees: getnode
 
 function enter(linfo, tree::Expr, env, stack = Any[];
         loctree = nothing, code = "", evaluating_staged = false)
@@ -108,7 +110,7 @@ function enter(linfo, tree::Expr, env, stack = Any[];
     push!(stack, interp)
     ind, node = next_expr!(interp)
 
-    while interp.shadowtree.shadow[ind].val
+    while getnode(interp.shadowtree,ind).shadow.x.val
         ind, node = next_expr!(interp)
     end
 
@@ -520,7 +522,7 @@ end
 function next_expr!(interp)
     x, next_it = next(interp.it, interp.cur_state)
     interp.cur_state = next_it
-    interp.next_expr = x
+    interp.next_expr = get(x[1]), x[2]
 end
 
 function find_label_index(tree, label)
@@ -537,8 +539,13 @@ function goto!(interp, target)
     interp.shadowtree, interp.it = make_shadowtree(interp.ast)
     lind = find_label_index(interp.ast, target)
 
+    next_state  = typeof(interp.cur_state)(
+        AbstractTrees.ImplicitNodeStack(Any[Tree(interp.ast)[lind]],
+            AbstractTrees.ImplicitIndexStack([lind]))
+    )
+
     # next_expr! below will move past the label node
-    interp.cur_state = next(interp.it,(false,nothing,[lind]))[2]
+    interp.cur_state = next(interp.it, next_state)[2]
     next_expr!(interp)
     return done!(interp)
 end
@@ -555,7 +562,7 @@ function _step_expr(interp)
         end
         if isa(node, Slot) || isa(node,SSAValue)
             # Check if we're the LHS of an assignment
-            if ind[end] == 1 && interp.shadowtree.tree[ind[1:end-1]].head == :(=)
+            if ind.idx_stack.stack[end] == 1 && interp.shadowtree.tree[ind.idx_stack.stack[1:end-1]].head == :(=)
                 ret = node
             elseif isa(node,SSAValue)
                 ret = interp.env.ssavalues[node.id+1]
@@ -650,7 +657,7 @@ function _step_expr(interp)
         buf = IOBuffer()
         Base.showerror(buf, err)
         D = diag(SourceRange(),takebuf_string(buf))
-        diag(D, Tree(interp.loctree)[ind].loc, "while running this expression", :note)
+        diag(D, Tree(interp.loctree)[ind.idx_stack.stack].loc, "while running this expression", :note)
         rethrow(D)
     end
     _evaluated!(interp, ret)
@@ -719,7 +726,7 @@ end
 
 function next_line!(interp; state = nothing)
     didchangeline = false
-    fls = determine_line_and_file(interp, interp.next_expr[1])
+    fls = determine_line_and_file(interp, interp.next_expr[1].idx_stack.stack)
     line = fls[1][2]
     first = true
     while !didchangeline
@@ -772,10 +779,10 @@ function _evaluated!(interp, ret, wasstaged = false)
         # the call rather than the call itself
         ind, node = interp.next_expr
         @assert isexpr(node, :call)
-        interp.shadowtree[[ind; 1]] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
+        interp.shadowtree[[ind.idx_stack.stack; 1]] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
     else
         ind, node = interp.next_expr
-        interp.shadowtree[ind] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
+        interp.shadowtree[ind.idx_stack.stack] = (ret, AnnotationNode{Any}(true,AnnotationNode{Any}[]))
     end
 end
 evaluated!(interp, ret, wasstaged = false) = (_evaluated!(interp, ret, wasstaged); done!(interp))
@@ -786,7 +793,7 @@ Advance to the next evaluatable statement
 function done!(interp)
     ind, node = interp.next_expr
     # Skip evaluated values (e.g. constants)
-    while interp.shadowtree.shadow[ind].val
+    while interp.shadowtree.shadow[ind.idx_stack.stack].val
         ind, node = next_expr!(interp)
     end
     return true
