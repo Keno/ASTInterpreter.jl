@@ -303,7 +303,7 @@ end
 global fancy_mode = false
 
 print_status(state, _::Void, args...) = nothing
-function print_status(state, interp::Interpreter, highlight = interp.next_expr[1]; fancy = fancy_mode)
+function print_status(state, interp::Interpreter, highlight = idx_stack(interp); fancy = fancy_mode)
     if !fancy && !isempty(interp.code)
         fls = determine_line_and_file(interp, highlight)
         for (file,line) in fls[end:-1:2]
@@ -726,7 +726,7 @@ end
 
 function next_line!(interp; state = nothing)
     didchangeline = false
-    fls = determine_line_and_file(interp, interp.next_expr[1].idx_stack.stack)
+    fls = determine_line_and_file(interp, idx_stack(interp))
     line = fls[1][2]
     first = true
     while !didchangeline
@@ -746,7 +746,7 @@ function next_line!(interp; state = nothing)
         # If this is a goto node, step it and reevaluate
         if isgotonode(node)
             _step_expr(interp) || return false
-            fls = determine_line_and_file(interp, interp.next_expr[1])
+            fls = determine_line_and_file(interp, idx_stack(interp))
             didchangeline = line != fls[1][2]
         elseif iswrappercall(interp, node)
             interp.did_wrappercall = true
@@ -767,7 +767,7 @@ end
 
 function advance_to_line(interp, line)
     while true
-        at_line = determine_line_and_file(interp, interp.next_expr[1])[1][2]
+        at_line = determine_line_and_file(interp, idx_stack(interp))[1][2]
         at_line == line && break
         next_line!(interp) || break
     end
@@ -1390,7 +1390,7 @@ function execute_command(state, interp::Interpreter, ::Val{:finish}, cmd)
 end
 
 function execute_command(state, interp::Interpreter, ::Val{:edit}, cmd)
-    file, line = determine_line_and_file(interp, interp.next_expr[1])[end]
+    file, line = determine_line_and_file(interp, idx_stack(interp))[end]
     dfile = Base.find_source_file(string(file))
     file = dfile == nothing ? file : dfile
     Base.edit(file, line)
@@ -1404,7 +1404,7 @@ function execute_command(state, interp, ::Val{:bt}, cmd)
 end
 
 function execute_command(state, interp::Interpreter, ::Val{:shadow}, cmd)
-    print_shadowtree(interp.shadowtree, interp.next_expr[1])
+    print_shadowtree(interp.shadowtree, idx_stack(interp))
     println()
     return false
 end
@@ -1416,7 +1416,7 @@ function execute_command(state, interp, ::Val{:linfo}, cmd)
 end
 
 function execute_command(state, interp::Interpreter, ::Val{:ind}, cmd)
-    println("About to execute index ", interp.next_expr[1])
+    println("About to execute index ", idx_stack(interp))
     return false
 end
 
@@ -1692,6 +1692,8 @@ function RunDebugREPL(top_interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
+idx_stack(interp::Interpreter) = interp.next_expr[1].idx_stack.stack
+
 """
 Single step the current function to exit, optionally printing the tree at every
 step.
@@ -1708,7 +1710,7 @@ function finish!(interp::Interpreter; print_step::Bool = false, recursive = fals
                     if newinterp !== nothing
                         finish!(newinterp; print_step = print_step, recursive = true)
                         evaluated!(interp, newinterp.retval)
-                        print_step && print_shadowtree(interp.shadowtree, interp.next_expr[1])
+                        print_step && print_shadowtree(interp.shadowtree, idx_stack(interp))
                         continue
                     end
                 end
@@ -1717,7 +1719,7 @@ function finish!(interp::Interpreter; print_step::Bool = false, recursive = fals
         if !step_expr(interp)
             break
         end
-        print_step && print_shadowtree(interp.shadowtree, interp.next_expr[1])
+        print_step && print_shadowtree(interp.shadowtree, idx_stack(interp))
     end
     interp.retval
 end
