@@ -976,7 +976,8 @@ function process_loctree(res, contents, linfo, complete = true)
     loctree, contents
 end
 
-const SEARCH_PATH = [""]
+const SEARCH_PATH = [joinpath(JULIA_HOME,"../share/julia/base/"),
+    joinpath(JULIA_HOME,"../include/")]
 function readfileorhist(file)
     if startswith(string(file),"REPL[")
         hist_idx = parse(Int,string(file)[6:end-1])
@@ -1191,15 +1192,15 @@ function print_locals(io::IO, linfo, env::Environment, undef_callback)
     end
 end
 
-function print_backtrace(interp)
+function print_backtrace(state, interp)
     num = 1
     for frame in reverse(interp.stack)
-        print_frame(STDOUT, num, frame)
+        print_frame(state, STDOUT, num, frame)
         num += 1
     end
 end
 
-function print_frame(io::IO, num, interp::Interpreter)
+function print_frame(_, io::IO, num, interp::Interpreter)
     print(io, "[$num] ")
     print_linfo_desc(io, interp.linfo)
     println(io)
@@ -1398,7 +1399,7 @@ function execute_command(state, interp::Interpreter, ::Val{:edit}, cmd)
 end
 
 function execute_command(state, interp, ::Val{:bt}, cmd)
-    print_backtrace(state.top_interp)
+    print_backtrace(state, state.top_interp)
     println()
     return false
 end
@@ -1457,7 +1458,7 @@ end
 function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
     subcmds = split(command,' ')[2:end]
     if isempty(subcmds) || subcmds[1] == "v"
-        print_frame(STDOUT, state.level, state.interp)
+        print_frame(state, STDOUT, state.level, state.interp)
         return false
     else
         new_level = parse(Int, subcmds[1])
