@@ -540,7 +540,7 @@ function goto!(interp, target)
     lind = find_label_index(interp.ast, target)
 
     next_state  = typeof(interp.cur_state)(
-        AbstractTrees.ImplicitNodeStack(Any[Tree(interp.ast)[lind]],
+        AbstractTrees.ImplicitNodeStack(Any[],
             AbstractTrees.ImplicitIndexStack([lind]))
     )
 
