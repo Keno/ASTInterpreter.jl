@@ -976,8 +976,9 @@ function process_loctree(res, contents, linfo, complete = true)
     loctree, contents
 end
 
-const SEARCH_PATH = [joinpath(JULIA_HOME,"../share/julia/base/"),
-    joinpath(JULIA_HOME,"../include/")]
+const SEARCH_PATH = []
+__init__() = append!(SEARCH_PATH,[joinpath(JULIA_HOME,"../share/julia/base/"),
+    joinpath(JULIA_HOME,"../include/")])
 function readfileorhist(file)
     if startswith(string(file),"REPL[")
         hist_idx = parse(Int,string(file)[6:end-1])
