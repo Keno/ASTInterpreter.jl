@@ -1750,9 +1750,19 @@ end
 macro enter(arg)
     arg = ASTInterpreter.lower!(arg)
     @assert isa(arg, Expr) && arg.head == :call
+    kws = collect(filter(x->isexpr(x,:kw),arg.args))
+    if !isempty(kws)
+      args = Expr(:tuple,:(Core.kwfunc($(args[1]))),
+        Expr(:call,Base.vector_any,mapreduce(
+          x->[QuoteNode(x.args[1]),x.args[2]],vcat,kws)...),
+        map(x->isexpr(x,:parameters)?QuoteNode(x):x,
+          filter(x->!isexpr(x,:kw),arg.args))...)
+    else
+      args = Expr(:tuple,
+        map(x->isexpr(x,:parameters)?QuoteNode(x):x, arg.args)...)
+    end
     quote
-        theargs = $(esc(Expr(:tuple,map(
-            x->isexpr(x,:parameters)?QuoteNode(x):x,arg.args)...)))
+        theargs = $(esc(args))
         interp = ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...))
         interp = ASTInterpreter.maybe_step_through_wrapper!(interp)
         ASTInterpreter.next_call!(interp)
