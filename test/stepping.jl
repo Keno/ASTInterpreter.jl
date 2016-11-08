@@ -89,3 +89,20 @@ ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 # return z
 ASTInterpreter.execute_command(state, state.top_interp, Val{:n}(), "n")
 @assert interp.retval == sin(5)
+
+# Test stepping into functions with keyword arguments
+f(x; b = 1) = x+b
+g() = f(1; b = 2)
+interp = ASTInterpreter.enter_call_expr(nothing, :($(g)()));
+state = dummy_state(interp)
+# Step to the actual call - TODO: We may want to hide these
+ASTInterpreter.execute_command(state, state.top_interp, Val{:nc}(), "nc")
+ASTInterpreter.execute_command(state, state.top_interp, Val{:nc}(), "nc")
+ASTInterpreter.execute_command(state, state.top_interp, Val{:nc}(), "nc")
+# Step in
+ASTInterpreter.execute_command(state, state.top_interp, Val{:s}(), "s")
+@assert state.top_interp.next_expr[2] == :(($+)(1,2))
+# Should get out in two steps
+ASTInterpreter.execute_command(state, state.top_interp, Val{:finish}(), "finish")
+ASTInterpreter.execute_command(state, state.top_interp, Val{:finish}(), "finish")
+@assert interp.retval == 3

@@ -1474,6 +1474,23 @@ function execute_command(state, interp, ::Union{Val{:f},Val{:fr}}, command)
     return true
 end
 
+function maybe_step_through_wrapper!(interp)
+    name = string(interp.linfo.specTypes.parameters[1].name.name)
+    if startswith(name,"#kw#") # Is keyword wrapper
+      fname = name[5:end]
+      while next_call!(interp)
+        expr = interp.next_expr[2]
+        if isa(expr, Expr) && expr.head == :call && !isa(expr.args[1],Core.IntrinsicFunction)
+          if startswith(string(typeof(expr.args[1]).name.mt.name), fname)
+            interp.did_wrappercall = true
+            return enter_call_expr(interp, expr)
+          end
+        end
+      end
+    end
+    interp
+end
+
 function execute_command(state, interp::Interpreter, cmd::Union{Val{:s},Val{:si},Val{:sg}}, command)
     first = true
     while true
@@ -1483,7 +1500,11 @@ function execute_command(state, interp::Interpreter, cmd::Union{Val{:s},Val{:si}
                 x = enter_call_expr(state.top_interp, expr, enter_generated = command == "sg")
                 if x !== nothing
                     state.interp = state.top_interp = x
-                    (cmd == Val{:s}() || cmd == Val{:sg}()) && next_call!(x)
+                    if (cmd == Val{:s}() || cmd == Val{:sg}())
+                      state.interp = state.top_interp = 
+                        maybe_step_through_wrapper!(state.interp)
+                      next_call!(state.interp)
+                    end
                     return true
                 end
             elseif !first && isexpr(expr, :return)
@@ -1733,6 +1754,7 @@ macro enter(arg)
         theargs = $(esc(Expr(:tuple,map(
             x->isexpr(x,:parameters)?QuoteNode(x):x,arg.args)...)))
         interp = ASTInterpreter.enter_call_expr(nothing,Expr(:call,theargs...))
+        interp = ASTInterpreter.maybe_step_through_wrapper!(interp)
         ASTInterpreter.next_call!(interp)
         ASTInterpreter.RunDebugREPL(interp)
     end
