@@ -1262,12 +1262,12 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     selfsym = Symbol("#self#")  # avoid having 2 arguments called `#self#`
     unusedsym = Symbol("#unused#")
     env = get_env_for_eval(interp)
-    linfo = get_linfo(interp)
-    lnames = Any[linfo.slotnames[2:end]..., linfo.sparam_syms...]
+    linfoi = get_linfo(interp)
+    lnames = isdefined(linfoi, :slotnames) ? Any[linfoi.slotnames[2:end]..., linfoi.sparam_syms...] : Any[linfoi.sparam_syms...]
     map!(x->(x===selfsym || !sym_visible(x) ? unusedsym : x), lnames)
     lnames = unique(lnames)
     f = Expr(:->,Expr(:tuple,lnames...), body)
-    lam = linfo.def.module.eval(f)
+    lam = linfoi.def.module.eval(f)
     linfo = first(methods(lam)).lambda_template
     # New interpreter is on detached stack
     loctree = nothing
@@ -1282,9 +1282,9 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
         if haskey(env.last_reference, varname)
             eval_env.locals[lidx] = env.locals[env.last_reference[varname]]
         else
-            oldidx = findfirst(get_linfo(interp).slotnames, varname)
+            oldidx = isdefined(linfoi, :slotnames) ? findfirst(linfoi.slotnames, varname) : 0
             if oldidx == 0
-                sparamidx = findfirst(get_linfo(interp).sparam_syms, varname)
+                sparamidx = findfirst(linfoi.sparam_syms, varname)
                 sparamidx == 0 && continue
                 eval_env.locals[lidx] = env.sparams[sparamidx]
             else
@@ -1501,7 +1501,7 @@ function execute_command(state, interp::Interpreter, cmd::Union{Val{:s},Val{:si}
                 if x !== nothing
                     state.interp = state.top_interp = x
                     if (cmd == Val{:s}() || cmd == Val{:sg}())
-                      state.interp = state.top_interp = 
+                      state.interp = state.top_interp =
                         maybe_step_through_wrapper!(state.interp)
                       next_call!(state.interp)
                     end
