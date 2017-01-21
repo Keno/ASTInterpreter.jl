@@ -1697,11 +1697,15 @@ function RunDebugREPL(top_interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
 end
 
+# IJulia versions < 1.4.2 do not have `readprompt`
+ijulia_readline() = (isdefined(Main.IJulia, :readprompt) ?
+                     Main.IJulia.readprompt("debug> ") : readline(STDIN))
+
 function IJuliaRunDebugREPL(top_interp)
     state = InterpreterState(top_interp, top_interp, 1, nothing, nothing, nothing)
     print_status(state, state.interp)
 
-    while (line=readline(STDIN)) != "q"
+    while (line=ijulia_readline()) != "q"
         if startswith(line, "`")
             ok, result = eval_code(state, line[2:end])
             if ok
