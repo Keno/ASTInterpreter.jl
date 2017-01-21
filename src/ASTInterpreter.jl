@@ -1560,6 +1560,10 @@ function execute_command(state, interp::Interpreter, ::Val{:prehook}, cmd)
 end
 
 function RunDebugREPL(top_interp)
+    if isdefined(Main, :IJulia)
+        return IJuliaRunDebugREPL(top_interp)
+    end
+
     promptname(level, name) = "$level|$name > "
 
     repl = Base.active_repl
@@ -1691,6 +1695,47 @@ function RunDebugREPL(top_interp)
     done!(state.interp)
     print_status(state, state.interp)
     Base.REPL.run_interface(repl.t, LineEdit.ModalInterface([panel,julia_prompt,search_prompt]))
+end
+
+function IJuliaRunDebugREPL(top_interp)
+    state = InterpreterState(top_interp, top_interp, 1, nothing, nothing, nothing)
+    print_status(state, state.interp)
+
+    while (line=readline(STDIN)) != "q"
+        if startswith(line, "`")
+            ok, result = eval_code(state, line[2:end])
+            if ok
+                println(result)
+                println()
+            end
+            continue
+        end
+        command = strip(line)
+        do_print_status = true
+        cmd1 = split(command,' ')[1]
+        do_print_status = try
+            execute_command(state, state.interp, Val{Symbol(cmd1)}(), command)
+        catch err
+            isa(err, AbstractDiagnostic) || rethrow(err)
+            caught = false
+            for interp_idx in length(state.top_interp.stack):-1:1
+                if process_exception!(state.top_interp.stack[interp_idx], err, interp_idx == length(top_interp.stack))
+                    interp = state.top_interp = state.top_interp.stack[interp_idx]
+                    resize!(state.top_interp.stack, interp_idx)
+                    caught = true
+                    break
+                end
+            end
+            !caught && rethrow(err)
+            display_diagnostic(STDERR, state.interp.code, err)
+            println(STDERR)
+            continue
+        end
+        if do_print_status
+            print_status(state, state.interp)
+            run_pre_hooks(state, state.interp)
+        end
+    end
 end
 
 idx_stack(interp::Interpreter) = interp.next_expr[1].idx_stack.stack
