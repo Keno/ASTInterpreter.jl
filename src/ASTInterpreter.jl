@@ -329,7 +329,7 @@ function print_status(state, interp::Interpreter, highlight = idx_stack(interp);
                          name = interp.linfo.slotnames[x.id]
                          return sym_visible(name) ? name : x
                      elseif isa(x, AbstractArray)
-                         return length(x) <= 10 ? x : Suppressed(summary(x))
+                         return length(linearindices(x)) <= 10 ? x : Suppressed(summary(x))
                      elseif isa(x, LambdaInfo)
                          return Suppressed("generated thunk")
                      else
@@ -1501,7 +1501,7 @@ function execute_command(state, interp::Interpreter, cmd::Union{Val{:s},Val{:si}
                 if x !== nothing
                     state.interp = state.top_interp = x
                     if (cmd == Val{:s}() || cmd == Val{:sg}())
-                      state.interp = state.top_interp = 
+                      state.interp = state.top_interp =
                         maybe_step_through_wrapper!(state.interp)
                       next_call!(state.interp)
                     end
