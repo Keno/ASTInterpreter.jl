@@ -43,7 +43,7 @@ end
 
 # EvaluationTree
 
-immutable Environment
+struct Environment
     locals::Vector{Nullable{Any}}
     ssavalues::Vector{Any}
     sparams::Vector{Any}
@@ -55,7 +55,7 @@ Environment() = Environment(Vector{Nullable{Any}}(), Any[], Any[], Dict{Symbol, 
 
 Base.copy(e::Environment) = Environment(copy(e.locals), copy(e.ssavalues), copy(e.sparams), copy(e.last_reference))
 
-type Interpreter
+mutable struct Interpreter
     stack::Vector{Any}
     env::Environment
     linfo::LambdaInfo
@@ -151,9 +151,9 @@ function node_repr(x)
     isa(x,GlobalRef) ? string(x.mod,'.',x.name) : string(x)
 end
 
-abstract ReplacementLoc
+abstract type ReplacementLoc end
 
-immutable SimpleReplacementLoc <: ReplacementLoc
+struct SimpleReplacementLoc <: ReplacementLoc
     replacing::SourceRange
     before::AbstractString
     after::AbstractString
@@ -167,7 +167,7 @@ Tokens.merge(x::ReplacementLoc,y::Lexer.Token) = Tokens.merge(Tokens.normalize(x
 Tokens.merge(x::ReplacementLoc,y) = Tokens.merge(Tokens.normalize(x),y)
 
 # SequencingReplacementLoc
-type SRLoc <: ReplacementLoc
+struct SRLoc <: ReplacementLoc
     replacing::SourceRange
     sequence::Vector{Any}
     lastidx::Int
@@ -180,12 +180,12 @@ function sequence!(s::SRLoc, ind)
     s
 end
 
-immutable Suppressed{T}
+struct Suppressed{T}
     item::T
 end
 Base.show(io::IO, x::Suppressed) = print(io, "<suppressed ", x.item, '>')
 
-immutable Coloring
+struct Coloring
     x
     color::Symbol
 end
@@ -907,18 +907,18 @@ function expression_mismatch(loweredast, parsedexpr, thecalls, theassignments, f
     end
 end
 
-immutable MatchingError
+struct MatchingError
 end
 
 function process_loctree(res, contents, linfo, complete = true)
-    parsedexpr = Lexer.¬(res)
-    parsedloc = Lexer.√(res)
+    parsedexpr = Lexer.:¬(res)
+    parsedloc = Lexer.:√(res)
     loweredast = nothing
     local thecalls, theassignments, forlocs
     loctree = try
         res = lower!(res)
-        parsedexpr = Lexer.¬(res)
-        parsedloc = Lexer.√(res)
+        parsedexpr = Lexer.:¬(res)
+        parsedloc = Lexer.:√(res)
         stmts = Base.uncompressed_ast(linfo)
         loweredast = Expr(:body); loweredast.args = stmts
         thecalls, theassignments, forlocs = collectcalls(SourceFile(contents), parsedexpr, parsedloc, complete)
@@ -1304,7 +1304,7 @@ function eval_in_interp(interp, body, slbody = nothing, code = "")
     ok, val
 end
 
-type InterpreterState
+struct InterpreterState
     top_interp
     interp
     level
@@ -1547,7 +1547,7 @@ function eval_code(state, command)
         theerr = err
     end
     if theerr == nothing
-        body = Lexer.¬(res)
+        body = Lexer.:¬(res)
         ok, result = eval_in_interp(state.interp, body, res, command)
         ok && return (ok, result)
         theerr = result

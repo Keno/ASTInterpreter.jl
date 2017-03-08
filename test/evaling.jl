@@ -13,7 +13,7 @@ ok, res = ASTInterpreter.eval_code(state, "y")
 @assert res == 2
 
 # Evaling with sparams
-function evalsparams{T}(x::T)
+function evalsparams(x::T) where T
     x
 end
 interp = ASTInterpreter.enter_call_expr(nothing, :($(evalsparams)(1)))

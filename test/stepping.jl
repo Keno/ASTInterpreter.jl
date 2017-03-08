@@ -1,6 +1,6 @@
 using ASTInterpreter
 
-immutable DummyState; end
+struct DummyState; end
 Base.LineEdit.transition(s::DummyState, _) = nothing
 dummy_state(interp) = ASTInterpreter.InterpreterState(interp, interp, 1, DummyState(), nothing, nothing)
 
